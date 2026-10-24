@@ -1,0 +1,14 @@
+Lab 2 Submission
+
+Opened: Wednesday, 30 September 2026, 12:00 AM
+Due: Wednesday, 28 October 2026, 11:59 PM
+You need to submit the following documents in order to count your submission as valid. 
+
+1. The updated design document with justifications for your design choices. 
+
+2. Source code of Pintos OS containing the changes you made. 
+
+3. Screenshots of the summary of test cases. 
+
+WARNING! We will not tolerate any form of cheating. Your submission will be checked against both online implementations and your peers’ implementations. While we encourage you to discuss and help each other, we do not condone handing out your code solutions for other students. If caught plagiarizing you will be awarded 0 marks and there will be severe consequences.
+

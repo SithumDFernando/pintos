@@ -252,6 +252,8 @@ This layout means:
 
 ### Life of a Timer Tick
 
+A **timer tick** is Pintos's fundamental unit of time, driven by periodic hardware interrupts from the Programmable Interval Timer (PIT). Pintos sets `TIMER_FREQ = 100` (100 Hz), meaning the hardware triggers IRQ 0 every **10 ms** (1 tick). Ticks drive thread scheduling time slices (4 ticks = 40 ms) and sleep accounting (`timer_sleep()`).
+
 ```mermaid
 sequenceDiagram
     participant HW as Hardware Timer (PIT)
