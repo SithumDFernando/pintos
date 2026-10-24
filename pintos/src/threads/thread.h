@@ -82,6 +82,7 @@ typedef int tid_t;
    blocked state is on a semaphore wait list. */
 #ifdef USERPROG
 struct child_status;
+struct file;
 #endif
 
 struct thread
@@ -105,6 +106,7 @@ struct thread
     int next_fd;                        /* Next descriptor to hand out. */
     struct list children;               /* Child processes (struct child_status). */
     struct child_status *my_status;     /* Status shared with parent. */
+    struct file *executable;            /* Running executable file handle. */
 #endif
 
     /* Owned by thread.c. */

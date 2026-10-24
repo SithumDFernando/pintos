@@ -225,6 +225,17 @@ process_exit (void)
     printf ("%s: exit(%d)\n", cur->name, cur->exit_code);
   fd_close_all ();
 
+  /* Close running executable to re-enable writes to the binary.
+     Must happen BEFORE signaling parent on exit_sema so that
+     the parent sees writes re-enabled immediately upon wait() return. */
+  if (cur->executable != NULL)
+    {
+      lock_acquire (&fs_lock);
+      file_close (cur->executable);
+      lock_release (&fs_lock);
+      cur->executable = NULL;
+    }
+
   /* Release child status records of all our children (orphan adoption). */
   while (!list_empty (&cur->children))
     {
@@ -470,8 +481,18 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   success = true;
 
  done:
-  /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  /* We arrive here whether the load is successful or not.
+     On success, keep the executable open and deny writes to it so
+     that running binaries cannot be modified.  The file handle is
+     recorded in the thread and closed at process exit.
+     On failure, close the file handle immediately. */
+  if (success)
+    {
+      file_deny_write (file);
+      t->executable = file;
+    }
+  else
+    file_close (file);
   lock_release (&fs_lock);
   return success;
 }

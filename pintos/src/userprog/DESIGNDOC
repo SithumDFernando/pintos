@@ -125,6 +125,7 @@ struct thread (pintos/src/threads/thread.h, under USERPROG), new members:
   int next_fd;                        Next descriptor to hand out; starts at 2.
   struct list children;               Child processes (struct child_status).
   struct child_status *my_status;     Shared status record with parent.
+  struct file *executable;            Running executable handle; write denied.
 
 struct fd_entry (pintos/src/userprog/syscall.c):
   int fd; struct file *file; struct list_elem elem;
@@ -325,9 +326,42 @@ process corresponds directly to exactly one kernel thread.  Therefore,
 the process id (pid_t) is identical to the kernel thread id (tid_t).
 No translation table is necessary.
 
----- PENDING (later phases) ----
+>> B12: How does your implementation prevent writes to running
+>> executables?  Why is the file kept open rather than only holding
+>> an inode or relying on an external lock?
 
->> B12 - B14: (pending)
+In load () (pintos/src/userprog/process.c), after ELF segments and the
+initial stack are successfully validated and loaded, the kernel calls
+file_deny_write (file) and records the open handle in t->executable
+without calling file_close (file) at the done: label.
+
+Rationale and mechanisms:
+1. Lifecycle of write-denial: Pintos ties inode write denial directly
+   to the open struct file handle.  file_deny_write () sets
+   file->deny_write = true and increments inode->deny_write_cnt.  When
+   file_close () is invoked, it automatically calls file_allow_write (),
+   which decrements inode->deny_write_cnt.  Closing the file at load-time
+   would immediately undo write-denial.  Keeping the file open preserves
+   protection for the process's entire execution lifetime.
+2. Concurrent executions: Multiple concurrent processes running the same
+   binary (e.g. rox-multichild) each open a distinct struct file for the
+   same inode and call file_deny_write (), incrementing inode->deny_write_cnt.
+   Writes remain disallowed until all instances have terminated and closed
+   their respective handles.
+3. Order-of-events synchronization: In process_exit (), cur->executable
+   is closed under fs_lock before signaling cs->exit_sema to wake the
+   parent.  This ensures that when a parent's wait () returns, writes
+   to the child binary are guaranteed to be re-enabled on disk (verified
+   by rox-child).
+4. Failure safety: If load () fails at any point, the open file is closed
+   immediately at done:, ensuring no handle leaks and that write-denial is
+   not left active.  If a process terminates abnormally (e.g. killed by an
+   exception), process_exit () is still executed by thread_exit (),
+   reliably closing cur->executable under fs_lock.
+
+---- PENDING (Phase 7) ----
+
+>> Final test verification, documentation polishing, and submission bundle.
 
                            SURVEY QUESTIONS
                            ================

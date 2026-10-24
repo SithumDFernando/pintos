@@ -469,6 +469,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->next_fd = 2;      /* 0 and 1 are the console. */
   list_init (&t->children);
   t->my_status = NULL;
+  t->executable = NULL;
 #endif
 
   old_level = intr_disable ();

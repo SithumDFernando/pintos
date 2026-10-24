@@ -14,7 +14,7 @@ This document records the incremental progress, architectural decisions, file ch
 | Phase 3 | User Memory Access & Safety | ✅ Done | `pintos/src/userprog/syscall.c`, `pintos/src/userprog/exception.c`, `pintos/src/userprog/DESIGNDOC` | `sc-*`, `bad-*`, `args-*`, `halt`, `exit` PASS; 7 boundary/file tests await later phases |
 | Phase 4 | Process Control (exec / wait / exit) | ✅ Done | `pintos/src/userprog/process.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/syscall.c`, `pintos/src/userprog/DESIGNDOC` | `exec-*`, `wait-*`, `multi-recurse`, `args-*`, `halt`, `exit`, `sc-*`, `bad-*` (all PASS) |
 | Phase 5 | File System Syscalls | ✅ Done | `pintos/src/userprog/syscall.c`, `pintos/src/userprog/DESIGNDOC` | `create-*`, `open-*`, `close-*`, `read-*`, `write-*`, `multi-child-fd` (all 31 PASS) |
-| Phase 6 | Deny Writes to Running Executables | ⏳ Pending | `userprog/process.c` | `rox-*` |
+| Phase 6 | Deny Writes to Running Executables | ✅ Done | `pintos/src/userprog/process.c`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/DESIGNDOC` | `rox-simple`, `rox-child`, `rox-multichild` (all PASS; 80/80 total) |
 | Phase 7 | Full Test Suite Verification & Submission | ⏳ Pending | Full workspace | All 76 tests in `tests/userprog` |
 
 ---
@@ -150,8 +150,31 @@ This document records the incremental progress, architectural decisions, file ch
   - `read-*` (6): `read-normal`, `read-bad-ptr`, `read-boundary`, `read-zero`, `read-stdout`, `read-bad-fd` (all PASS).
   - `write-*` (6): `write-normal`, `write-bad-ptr`, `write-boundary`, `write-zero`, `write-stdin`, `write-bad-fd` (all PASS).
   - `multi-child-fd` (PASS, child cannot close parent's fd, parent reads correctly).
-- Full suite status: **77 of 80 tests pass**.
-- The only 3 failing tests across the entire suite are `rox-simple`, `rox-child`, `rox-multichild` (Phase 6: Deny Writes to Running Executables).
+- Full suite status: **All 80 tests passed!** (100% pass rate achieved after Phase 6).
+
+### Phase 6 — Deny Writes to Running Executables
+
+**Files modified**
+- `pintos/src/threads/thread.h`: added forward declaration `struct file;` and member `struct file *executable;` to `struct thread` under `USERPROG`.
+- `pintos/src/threads/thread.c`: explicitly initialized `t->executable = NULL;` in `init_thread()`.
+- `pintos/src/userprog/process.c`:
+  - `load()`: on successful load, called `file_deny_write (file)` and preserved the open handle in `t->executable = file` without closing it at the `done:` label. On load failure, closed `file` immediately as before.
+  - `process_exit()`: closed `cur->executable` under `fs_lock` (automatically invoking `file_allow_write()` to decrement `inode->deny_write_cnt`) and set `cur->executable = NULL`. Performed this cleanup strictly **before** signaling `exit_sema` to wake the waiting parent.
+- `pintos/src/userprog/DESIGNDOC`: recorded `struct file *executable` under B1; answered B12 with detailed rationale on keeping the file handle open across the process lifetime, handling concurrent executions (`rox-multichild`), and order-of-events synchronization with parent wake-up (`rox-child`).
+
+**Design decisions / trade-offs**
+- Inode deny counter lifetime bound to open file handle: Pintos's `file_deny_write()` increments `inode->deny_write_cnt`, while `file_close()` automatically calls `file_allow_write()` to decrement it. Keeping `cur->executable` open for the duration of process execution ensures that writes remain denied until process termination.
+- Critical order of events on exit: in `process_exit()`, `cur->executable` is closed under `fs_lock` before `sema_up(&cs->exit_sema)`. This guarantees that when a parent's `process_wait()` unblocks, writes to the child's binary on disk have already been re-enabled (preventing failures in tests like `rox-child`).
+- Handling concurrent executions: each process executing the same binary opens its own `struct file` pointing to the shared `struct inode`. Each call to `file_deny_write()` increments `inode->deny_write_cnt`, ensuring writes remain blocked until the last concurrent instance terminates and closes its executable handle (`rox-multichild`).
+- Failure & abnormal exit safety: if `load()` fails, `file_close(file)` is executed at `done:`, leaving `t->executable = NULL`. If a process is terminated prematurely by a page fault or exception, `thread_exit()` unconditionally routes through `process_exit()`, ensuring `cur->executable` is always closed and never leaks.
+
+**Verification (Docker, `make tests/userprog/rox-*.result` and `make check`)**
+- Build: clean, zero warnings, zero errors.
+- Phase 6 Key Targets (3/3 PASS):
+  - `rox-simple` (PASS): verifies open executable cannot be written to through a user descriptor.
+  - `rox-child` (PASS): verifies child executable cannot be modified while running, and parent can write back once child wait returns.
+  - `rox-multichild` (PASS): verifies recursive concurrent executions maintain write-denial until all instances terminate.
+- Full suite status: **All 80 tests passed!** (100% pass rate across the full Pintos User Programs test suite).
 
 
 
