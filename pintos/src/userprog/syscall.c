@@ -44,27 +44,63 @@ syscall_init (void)
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-/* Basic user memory check: true iff the SIZE bytes starting at UADDR
-   are all in user space and mapped.  (Phase 3 hardens this further
-   with string and buffer helpers.) */
+/* ---- User memory validation ----
+   Approach: verify-then-dereference.  Every user pointer is checked
+   (non-NULL, below PHYS_BASE, page mapped) before the kernel touches
+   it, and always before fs_lock is taken, so a bad pointer never
+   leaves a lock held.  Callers terminate the process with exit(-1)
+   when a check fails. */
+
+/* Longest user string we are willing to scan (one page). */
+#define MAX_USER_STRING PGSIZE
+
+/* True iff the single byte at UADDR is a mapped user address. */
 static bool
-user_range_ok (const void *uaddr, size_t size)
+valid_byte (const void *uaddr)
+{
+  return uaddr != NULL && is_user_vaddr (uaddr)
+         && pagedir_get_page (thread_current ()->pagedir, uaddr) != NULL;
+}
+
+/* True iff all SIZE bytes starting at UADDR are valid user memory.
+   Checks both ends (with wrap-around guard) and one byte on every
+   page in between.  A zero-length range is accepted. */
+static bool
+valid_range (const void *uaddr, size_t size)
 {
   const uint8_t *start = uaddr;
+  const uint8_t *last;
   const uint8_t *page;
 
   if (size == 0)
     return true;
-  if (!is_user_vaddr (start) || !is_user_vaddr (start + size - 1)
-      || start + size - 1 < start)
+  last = start + size - 1;
+  if (last < start || !valid_byte (start) || !valid_byte (last))
     return false;
-
-  /* Every page touched by the range must be mapped. */
-  for (page = pg_round_down (start); page <= start + size - 1;
-       page += PGSIZE)
-    if (pagedir_get_page (thread_current ()->pagedir, page) == NULL)
+  for (page = pg_round_down (start) + PGSIZE; page < last; page += PGSIZE)
+    if (!valid_byte (page))
       return false;
   return true;
+}
+
+/* True iff S is a NUL-terminated string lying entirely in valid user
+   memory (at most MAX_USER_STRING bytes including the NUL).  Used by
+   the file and exec system calls in later phases. */
+static bool valid_string (const char *s) UNUSED;
+static bool
+valid_string (const char *s)
+{
+  size_t i;
+
+  for (i = 0; i < MAX_USER_STRING; i++)
+    {
+      /* Re-check only at the start and on each new page. */
+      if ((i == 0 || pg_ofs (s + i) == 0) && !valid_byte (s + i))
+        return false;
+      if (s[i] == '\0')
+        return true;
+    }
+  return false;
 }
 
 /* Terminates the current process with STATUS.  The "name: exit(N)"
@@ -169,7 +205,7 @@ fd_close_all (void)
 static int
 sys_write (int fd, const void *buffer, unsigned size)
 {
-  if (!user_range_ok (buffer, size))
+  if (!valid_range (buffer, size))
     syscall_exit (-1);
   if (fd == 1)
     {
@@ -188,13 +224,13 @@ syscall_handler (struct intr_frame *f)
 
   /* Read the syscall number, then exactly the arguments it needs,
      validating the user stack first. */
-  if (!user_range_ok (f->esp, sizeof (uint32_t)))
+  if (!valid_range (f->esp, sizeof (uint32_t)))
     syscall_exit (-1);
   number = *(uint32_t *) f->esp;
   if (number >= SYSCALL_COUNT)
     syscall_exit (-1);
   nargs = syscall_nargs[number];
-  if (!user_range_ok (f->esp, sizeof (uint32_t) * (1 + nargs)))
+  if (!valid_range (f->esp, sizeof (uint32_t) * (1 + nargs)))
     syscall_exit (-1);
   memcpy (args, (uint32_t *) f->esp + 1, sizeof (uint32_t) * nargs);
 

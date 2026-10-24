@@ -4,6 +4,7 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -89,6 +90,9 @@ kill (struct intr_frame *f)
       printf ("%s: dying due to interrupt %#04x (%s).\n",
               thread_name (), f->vec_no, intr_name (f->vec_no));
       intr_dump_frame (f);
+      /* Killed processes report exit status -1; process_exit()
+         prints the "name: exit(-1)" line and frees resources. */
+      thread_current ()->exit_code = -1;
       thread_exit (); 
 
     case SEL_KCSEG:
@@ -151,6 +155,14 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
+  /* A fault in kernel mode on a user address means a syscall
+     dereferenced a bad pointer: kill the process, don't panic. */
+  if (!user && is_user_vaddr (fault_addr))
+    {
+      thread_current ()->exit_code = -1;
+      thread_exit ();
+    }
+
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",

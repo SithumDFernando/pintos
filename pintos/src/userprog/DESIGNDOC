@@ -144,12 +144,31 @@ and to avoid an arbitrary descriptor limit.
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
 
-The handler checks that the stack word holding the syscall number and
-the 1+N argument words lie in mapped user memory
-(user_range_ok ()), copies the arguments into a kernel array and
-dispatches.  write () validates its whole buffer first; fd 1 is sent
-to putbuf ().  Any failure terminates the process with exit(-1).
-(Further hardening is described in later phases.)
+Approach: verify-then-dereference.  Helpers in
+pintos/src/userprog/syscall.c:
+  valid_byte (p)      p != NULL, p < PHYS_BASE and the page is mapped
+                      (pagedir_get_page ()).
+  valid_range (p, n)  n == 0 is accepted; otherwise rejects address
+                      wrap-around, checks the first and last byte and
+                      one byte of every page in between.
+  valid_string (s)    scans to the NUL, re-checking at the start and on
+                      each page boundary; gives up after one page.
+The handler validates the stack word with the syscall number and the
+1+N argument words (so sc-bad-sp and sc-bad-arg die before anything is
+read), copies the arguments into a kernel array and dispatches.
+Buffers (read/write) are checked with valid_range () and strings
+(exec/create/open/remove) with valid_string () before any use and
+before fs_lock is taken.  Any failure calls syscall_exit (-1).
+
+Backstop (pintos/src/userprog/exception.c): kill () sets exit_code to
+-1 before thread_exit (), so user-mode faults (bad-read, bad-jump, ...)
+print "name: exit(-1)" via process_exit () and free their resources.
+A kernel-mode page fault on a user address also terminates the process
+instead of panicking the kernel.
+
+Alternative rejected: get_user ()/put_user () with fault recovery is
+faster but needs assembly helpers and careful release of resources
+from the fault handler; the explicit checks are simpler to verify.
 
 ---- SYNCHRONIZATION ----
 

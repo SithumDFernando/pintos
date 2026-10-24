@@ -11,7 +11,7 @@ This document records the incremental progress, architectural decisions, file ch
 | Phase 0 | Design Document Initialization | ✅ Done | `pintos/src/userprog/DESIGNDOC` | — |
 | Phase 1 | Argument Passing | ✅ Done (manual stack-dump verified) | `pintos/src/userprog/process.c` | `args-none` ... `args-dbl-space` (5) — need Phases 2/4 to pass |
 | Phase 2 | Syscall Dispatcher, FD Table & FS Lock | ✅ Done | `pintos/src/userprog/syscall.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/process.c` | `halt`, `exit`, `args-*` (all PASS) |
-| Phase 3 | User Memory Access & Safety | ⏳ Pending | `userprog/syscall.c`, `userprog/exception.c` | `sc-*`, `bad-*`, `*-boundary` |
+| Phase 3 | User Memory Access & Safety | ✅ Done | `pintos/src/userprog/syscall.c`, `pintos/src/userprog/exception.c`, `pintos/src/userprog/DESIGNDOC` | `sc-*`, `bad-*`, `args-*`, `halt`, `exit` PASS; 7 boundary/file tests await later phases |
 | Phase 4 | Process Control (exec / wait / exit) | ⏳ Pending | `userprog/process.c`, `threads/thread.[ch]` | `exec-*`, `wait-*`, `multi-*` |
 | Phase 5 | File System Syscalls | ⏳ Pending | `userprog/syscall.c` | `create-*`, `open-*`, `read-*`, `write-*`, etc. |
 | Phase 6 | Deny Writes to Running Executables | ⏳ Pending | `userprog/process.c` | `rox-*` |
@@ -66,3 +66,23 @@ This document records the incremental progress, architectural decisions, file ch
 **Verification (Docker)**
 - `make` builds clean (only the pre-existing `lib/kernel/debug.c` frame-address warning).
 - `make -k tests/userprog/{halt,exit,args-none,args-single,args-multiple,args-many,args-dbl-space}.result`: all 7 PASS.
+
+### Phase 3 - User Memory Access & Validation
+
+**Files modified**
+- `pintos/src/userprog/syscall.c`: `user_range_ok()` replaced by `valid_byte()`, `valid_range()`, `valid_string()`; `sys_write` and the dispatcher use `valid_range()`.
+- `pintos/src/userprog/exception.c`: `kill()` sets `exit_code = -1` before `thread_exit()`; a kernel-mode fault on a user address kills the process instead of panicking; added `threads/vaddr.h` include.
+- `pintos/src/userprog/DESIGNDOC` (B3 completed).
+
+**Design decisions / trade-offs**
+- Verify-then-dereference (not `get_user`/`put_user`): simpler to reason about and document; costs a page-table lookup per page.
+- `valid_range()` checks both ends, wrap-around, and one byte per intermediate page; zero length accepted.
+- `valid_string()` is bounded to one page, re-checking only at page starts. It is marked `UNUSED` until `exec`/`create`/`open`/`remove` land in later phases.
+- Validation always precedes `fs_lock`, so killed processes never hold it.
+
+**Verification (Docker, `make -k tests/userprog/<t>.result`)**
+- Build: no new warnings.
+- PASS (28): `halt`, `exit`, `args-{none,single,multiple,many,dbl-space}`, `sc-bad-sp`, `sc-bad-arg`, `sc-boundary{,-2,-3}`, `bad-read{,2}`, `bad-write{,2}`, `bad-jump{,2}`, `write-bad-ptr`, `read-bad-ptr`, `create-bad-ptr`, `open-bad-ptr`, `exec-bad-ptr`, `create-null`, `open-null`, `write-stdin`, `read-stdout`.
+- FAIL, expected (7), need unimplemented syscalls: `create-bound`, `open-boundary`, `read-boundary`, `write-boundary`, `write-normal`, `write-zero` (need `create`/`open`/`read`/`close`) and `exec-bound` (needs `exec`/`wait`). These cannot be judged until Phases 4-5.
+- Note: `*-bad-ptr`/`*-null` pass now because the unimplemented call exits -1; they must be re-run once the real syscalls exist.
+
