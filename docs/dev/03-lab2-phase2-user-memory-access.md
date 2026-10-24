@@ -1,6 +1,6 @@
 # Lab 2 / Phase 2 — Safe User Memory Access
 
-**Files**: `userprog/syscall.c` (+ optionally `userprog/exception.c`)
+**Files**: `pintos/src/userprog/syscall.c` (+ optionally `pintos/src/userprog/exception.c`)
 **Tests**: `sc-bad-sp`, `sc-bad-arg`, `sc-boundary(-2,-3)`, `bad-read(2)`, `bad-write(2)`,
 `bad-jump(2)`, `create-bad-ptr`, `open-bad-ptr`, `read/write-bad-ptr`, `exec-bad-ptr`,
 `exec-bound(-2,-3)`, `create-bound`, `open-boundary`, `read/write-boundary`, `*-null`
@@ -11,7 +11,7 @@
 | | A. Verify-then-dereference | B. Fault-based (`get_user`/`put_user`) |
 |---|---|---|
 | Speed | slower (page-table walk per check) | fastest (MMU does it) |
-| Complexity | low, all in `syscall.c` | needs asm helpers + `page_fault()` edit |
+| Complexity | low, all in `pintos/src/userprog/syscall.c` | needs asm helpers + `page_fault()` edit |
 | Risk | must check every byte range | must release resources on fault |
 | Debuggability | easy | harder |
 
@@ -23,9 +23,9 @@ future optimisation.
 A byte address `p` is valid iff
 `p != NULL && is_user_vaddr(p) && pagedir_get_page(thread_current()->pagedir, p) != NULL`.
 
-(`vaddr.h`: `is_user_vaddr(v) = v < PHYS_BASE`; `pagedir_get_page` returns NULL when unmapped.)
+(`pintos/src/threads/vaddr.h`: `is_user_vaddr(v) = v < PHYS_BASE`; `pagedir_get_page` returns NULL when unmapped.)
 
-## 3. Helper API (all `static` in `syscall.c`)
+## 3. Helper API (all `static` in `pintos/src/userprog/syscall.c`)
 
 ```c
 static bool valid_byte   (const void *p);                     // predicate above
@@ -72,7 +72,7 @@ static void exit_bad (void) NO_RETURN;                        // sys_exit(-1)
 **Order matters**: validate **before** taking `fs_lock` (Phase 3) → nothing to
 release when a process is killed (no leak, no deadlock).
 
-## 5. Page-Fault Path (`exception.c`)
+## 5. Page-Fault Path (`pintos/src/userprog/exception.c`)
 User-mode faults (e.g. `bad-read`: `*(int*)NULL`) reach `page_fault()` →
 `kill()` → `thread_exit()`. Required changes:
 - Set the dying process's exit status to **-1** before `thread_exit()` (Phase 4's

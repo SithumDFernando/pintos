@@ -1,11 +1,11 @@
 # Lab 2 / Phase 3 — Syscall Infrastructure, FD Table, FS Lock
 
-**Files**: `userprog/syscall.[ch]`, `threads/thread.[ch]`, `userprog/process.[ch]`
+**Files**: `pintos/src/userprog/syscall.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/process.[ch]`
 **Tests unlocked**: `halt`, `exit`, plus a prerequisite for everything else.
 
 ## 1. Current State
 `syscall_handler` = `printf ("system call!\n"); thread_exit ();` and ignores
-`f->esp`. Syscall numbers: `lib/syscall-nr.h` (`SYS_HALT=0, SYS_EXIT=1, SYS_EXEC,
+`f->esp`. Syscall numbers: `pintos/src/lib/syscall-nr.h` (`SYS_HALT=0, SYS_EXIT=1, SYS_EXEC,
 SYS_WAIT, SYS_CREATE, SYS_REMOVE, SYS_OPEN, SYS_FILESIZE, SYS_READ, SYS_WRITE,
 SYS_SEEK, SYS_TELL, SYS_CLOSE`; higher numbers are project 3/4 — must be
 rejected with exit(-1)).
@@ -34,13 +34,13 @@ typed parameters (`const char *`, `unsigned`, `int`).
 Pintos `filesys` is **not thread-safe**. Add:
 
 ```c
-struct lock fs_lock;           // defined in syscall.c, extern in syscall.h
+struct lock fs_lock;           // defined in pintos/src/userprog/syscall.c, extern in pintos/src/userprog/syscall.h
 // syscall_init(): lock_init (&fs_lock);
 ```
 
 Rules:
 - Every call into `filesys_*`, `file_*` happens under `fs_lock`
-  (including `load()` in `process.c`: `filesys_open`, `file_read`, `file_deny_write`,
+  (including `load()` in `pintos/src/userprog/process.c`: `filesys_open`, `file_read`, `file_deny_write`,
   and `process_exit`'s `file_close`).
 - Validate user memory **before** `lock_acquire` (Phase 2).
 - Never hold `fs_lock` across `process_execute` / `process_wait` / `thread_exit`
@@ -49,7 +49,7 @@ Rules:
 
 ## 4. Per-Process File Descriptor Table
 
-Add to `struct thread` (under `#ifdef USERPROG`):
+Add to `struct thread` in `pintos/src/threads/thread.h` (under `#ifdef USERPROG`):
 
 ```c
 struct list fd_list;     // list of struct fd_entry
@@ -67,27 +67,27 @@ struct fd_entry { int fd; struct file *file; struct list_elem elem; };
 | FD limit | hard | none (memory only) |
 | Close | free slot | free node |
 
-- `thread.c` `init_thread`: `list_init (&t->fd_list); t->next_fd = 2;`
+- In `pintos/src/threads/thread.c` `init_thread`: `list_init (&t->fd_list); t->next_fd = 2;`
   (children list added in Phase 4 here too).
 - `fd_alloc (file)`: `malloc` an entry, `fd = next_fd++`, push_back.
   `malloc` failure ⇒ close file, return -1.
 - `fd_lookup (fd)`: linear scan; returns NULL for `fd < 2`, unknown, closed.
-- `fd_close_all ()` called from `process_exit` (Phase 4/6).
+- `fd_close_all ()` called from `process_exit` in `pintos/src/userprog/process.c` (Phase 4/6).
 - fds are **not inherited** by children (`multi-child-fd`): a new thread starts empty.
 
 ## 5. `exit` and `halt`
 
-- `sys_halt`: `shutdown_power_off ()` (`devices/shutdown.h`); **no** exit message.
+- `sys_halt`: `shutdown_power_off ()` (`pintos/src/devices/shutdown.h`); **no** exit message.
 - `sys_exit(status)`: `thread_current ()->exit_code = status; thread_exit ();`
   (message + cleanup done centrally in `process_exit`, Phase 4).
 - `exit_bad()`: `sys_exit (-1)`.
 
 ## 6. Implementation Steps
-1. `syscall.h`: `extern struct lock fs_lock; void syscall_exit (int status) NO_RETURN;` (if process.c needs it).
-2. `syscall.c`: includes (`threads/vaddr.h`, `userprog/pagedir.h`, `threads/synch.h`, `filesys/*`, `devices/shutdown.h`, `devices/input.h`, `lib/kernel/console.h`).
+1. `pintos/src/userprog/syscall.h`: `extern struct lock fs_lock; void syscall_exit (int status) NO_RETURN;` (if `process.c` needs it).
+2. `pintos/src/userprog/syscall.c`: includes (`threads/vaddr.h`, `userprog/pagedir.h`, `threads/synch.h`, `filesys/*`, `devices/shutdown.h`, `devices/input.h`, `lib/kernel/console.h`).
 3. Implement validators (Phase 2), dispatcher, `halt`, `exit`, `write(fd==1)` (needed for every test's output).
-4. `thread.h/.c`: add fields + init.
-5. `process_exit`: free fd entries (finished in Phase 4).
+4. `pintos/src/threads/thread.[ch]`: add fields + init.
+5. `pintos/src/userprog/process.c` (`process_exit`): free fd entries (finished in Phase 4).
 
 ## 7. Acceptance Criteria
 - ✅ `halt` powers off; `exit` prints `name: exit(code)` (after Phase 4 message code).

@@ -1,7 +1,7 @@
 # Lab 0 — Getting Real: Kernel Monitor & Boot Tracing
 
 **Spec**: [P0_kernal_monitor.md](../labs/P0_kernal_monitor.md) · **Weight**: 30% code / 70% documentation
-**Files**: `threads/init.c` (code) · `p0/DESIGNDOC` + screenshots (docs)
+**Files**: `pintos/src/threads/init.c` (code) · `pintos/src/p0/DESIGNDOC` + screenshots (docs)
 
 ## 1. Goal
 
@@ -42,22 +42,22 @@ T2: pintos-gdb build/kernel.o ; (gdb) target remote localhost:1234
   (reset vector at top of 4 GB, BIOS ROM aliasing), next 3 instructions.
 
 ### B2. Bootloader
-- `b *0x7c00`, `c`; step through `loader.S`; compare with
-  `build/loader.asm` using `x/i`.
+- `b *0x7c00`, `c`; step through `pintos/src/threads/loader.S`; compare with
+  `pintos/src/threads/build/loader.asm` using `x/i`.
 - Answer: INT 13h (`ah=0x42` extended read) disk read; MBR partition scan
   looks for Pintos kernel partition type `0x20`; failure path prints
   `Not found` / reboot (`int $0x18`); handoff by `ljmp`/`call *%eax` into
   kernel entry `start` at `0x20000+` after loading.
-  ➜ Verify each claim in the real `threads/loader.S` before writing.
+  ➜ Verify each claim in the real `pintos/src/threads/loader.S` before writing.
 
 ### B3. Kernel
-- `b pintos_init`; read `threads/init.c`.
+- `b pintos_init`; read `pintos/src/threads/init.c`.
 - Inspect `init_page_dir[pd_no(ptov(0))]` (`p/x`), then at the 1st and 3rd
   call of `palloc_get_page` (`b palloc_get_page`, use `ignore` counts):
   `bt`, `finish` → return value, re-print page dir entry.
 - Keep a transcript of every GDB command and output (paste into DESIGNDOC).
 
-## 4. Phase C — Kernel Monitor (`threads/init.c`, TODO at line ~136)
+## 4. Phase C — Kernel Monitor (`pintos/src/threads/init.c`, TODO at line ~136)
 
 ```c
 } else {
@@ -86,13 +86,13 @@ Design points to justify in DESIGNDOC:
   overflow rather than corrupt memory.
 - Use `input_getc()` (blocks on keyboard queue) + `printf`/`putchar`.
 - `exit` breaks the loop and falls through to the existing `shutdown()`.
-- Compare strings with `strcmp` (lib/string.c).
+- Compare strings with `strcmp` (`pintos/src/lib/string.c`).
 
 ✅ `pintos -- ` (no actions) → prompt; `whoami` prints name; `foo` → `invalid command`; `exit` powers off.
 ⚠️ Under QEMU with `-serial stdio` input arrives via serial; ensure `\r` is handled.
 🔬 Manual test via `pintos --` inside Docker; add a screenshot.
 
-## 5. Phase D — Documentation (`p0/DESIGNDOC`)
+## 5. Phase D — Documentation (`pintos/src/p0/DESIGNDOC`)
 
 Sections: GDB answers (B1–B3) with command transcripts; monitor design
 rationale; screenshots in `pintos/src/p0/`.

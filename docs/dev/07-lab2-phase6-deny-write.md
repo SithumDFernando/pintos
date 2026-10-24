@@ -1,10 +1,10 @@
 # Lab 2 / Phase 6 — Denying Writes to Running Executables
 
-**Files**: `userprog/process.c`, `threads/thread.h` (field `executable`)
+**Files**: `pintos/src/userprog/process.c`, `pintos/src/threads/thread.h` (field `executable`)
 **Tests**: `rox-simple`, `rox-child`, `rox-multichild` (uses `child-rox`)
 
 ## 1. Problem
-A running program's file must not be modified. Today `load()` ends with
+A running program's file must not be modified. Today `load()` in `pintos/src/userprog/process.c` ends with
 `file_close (file)` (line ~315), so nothing protects the binary.
 
 ## 2. Design
@@ -21,7 +21,7 @@ done:
   else         file_close (file);          // file may be NULL: file_close(NULL) is a no-op
 ```
 
-## 3. Semantics (`inode.c`)
+## 3. Semantics (`pintos/src/filesys/inode.c`)
 `deny_write_cnt` is **per inode**, so two processes running the same binary each
 increment it; writes are re-allowed only after **both** close (`rox-multichild`).
 Opening an executable for read via `open()` and writing through that fd

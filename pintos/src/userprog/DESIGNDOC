@@ -1,0 +1,129 @@
+             +--------------------------+
+             |          CS 2043         |
+             | PROJECT 2: USER PROGRAMS |
+             |      DESIGN DOCUMENT     |
+             +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Student 240159J <240159J@uom.lk>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+(none)
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+(none)
+
+                           ARGUMENT PASSING
+                           ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+No new structs, globals or typedefs.  New static functions in
+pintos/src/userprog/process.c:
+
+  static bool extract_prog_name (const char *cmdline, char *prog,
+                                 size_t size);
+      Copies the first space-delimited token (program name) into a
+      caller-supplied buffer.
+
+  static bool push_arguments (uint8_t *kpage, const char *cmdline,
+                              void **esp);
+      Builds argv/argc/return-address on the stack page before it is
+      mapped.
+
+Changed signatures: setup_stack () now takes the command line; load ()
+names its first parameter `cmdline' (it receives the full command line).
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+process_execute () extracts the program name with extract_prog_name ()
+(into a 15-byte local buffer), uses it as the thread name, and passes a
+copy of the *full* command line to start_process ()/load ().  An empty
+or all-space command line returns TID_ERROR.  load () re-extracts the
+program name to open the executable (error messages therefore print
+only the program name), then calls setup_stack (esp, cmdline).
+
+push_arguments () works on the kernel mapping (kpage) of the stack page
+before install_page (), so it never depends on the active page
+directory, and a failure only needs to free kpage.
+ 1. Tokenize a private copy of the command line with strtok_r ()
+    (repeated spaces collapse), storing token pointers in a scratch
+    page and summing string bytes.
+ 2. Reject (return false, so load fails cleanly) if argc == 0, argc
+    exceeds the scratch capacity, or strings + 3 alignment bytes +
+    4*(argc+1) + 12 bytes (argv, argc, return address) exceed PGSIZE.
+ 3. Copy the strings downward from PHYS_BASE in order argv[0]..argv[n-1]
+    recording each user address; because pointers are pushed in
+    reverse (argv[argc-1] first, down to argv[0]) after a NULL
+    sentinel, argv[0] ends up at the lowest address, i.e. in order.
+ 4. Word-align, push NULL, the pointers, then argv (address of
+    argv[0]), argc and a fake return address 0.  *esp is set to the
+    fake return address.
+
+The overflow check happens before any byte is written, so a huge
+command line cannot corrupt memory; it simply makes exec fail.
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+strtok () keeps its position in a hidden static variable, so it is not
+reentrant: two threads (or a thread preempted mid-tokenization) would
+corrupt each other's state.  Pintos is a preemptive multithreaded
+kernel; strtok_r () keeps the state in a caller-supplied save_ptr.
+
+>> A4: In Pintos, the kernel separates commands into an executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+ 1. Less kernel code runs in the privileged domain: a parsing bug in the
+    shell only breaks one user process, not the whole kernel.
+ 2. The shell can do richer processing (quoting, wildcards, variable
+    expansion, pipes, redirection) and be replaced or upgraded without
+    changing the kernel; the kernel just receives a prepared argv.
+
+                             SYSTEM CALLS
+                             ============
+
+(To be completed in later phases.)
+
+---- DATA STRUCTURES ----
+
+>> B1 - B2: (pending)
+
+---- ALGORITHMS ----
+
+>> B3 - B8: (pending)
+
+---- SYNCHRONIZATION ----
+
+>> B9 - B11: (pending)
+
+---- RATIONALE ----
+
+>> B12 - B14: (pending)
+
+                           SURVEY QUESTIONS
+                           ================
+
+>> Any feedback on the assignment is welcome.
+
+(none)

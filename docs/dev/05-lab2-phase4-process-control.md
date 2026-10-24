@@ -1,6 +1,6 @@
 # Lab 2 / Phase 4 — Process Control: exec, wait, exit
 
-**Files**: `userprog/process.[ch]`, `threads/thread.[ch]`, `userprog/syscall.c`
+**Files**: `pintos/src/userprog/process.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/syscall.c`
 **Tests**: `exec-once/arg/bound*/multiple/missing/bad-ptr`, `wait-simple/twice/killed/bad-pid`,
 `multi-recurse`, `multi-child-fd`, termination message in **every** test.
 
@@ -36,7 +36,7 @@ struct child_status {
 };
 ```
 
-`struct thread` additions (`#ifdef USERPROG`):
+`struct thread` additions in `pintos/src/threads/thread.h` (`#ifdef USERPROG`):
 
 ```c
 int exit_code;                    // status to publish (default -1)
@@ -45,7 +45,7 @@ struct child_status *my_status;   // record shared with my parent (NULL for init
 struct file *executable;          // Phase 6
 struct list fd_list; int next_fd; // Phase 3
 ```
-`init_thread`: `list_init(&t->children); t->my_status = NULL; t->exit_code = -1; t->executable = NULL;`
+In `pintos/src/threads/thread.c`'s `init_thread`: `list_init(&t->children); t->my_status = NULL; t->exit_code = -1; t->executable = NULL;`
 
 **Release helper** (`static void release_status (struct child_status *cs)`):
 `lock_acquire; n = --cs->ref_cnt; lock_release; if (n == 0) free (cs);`
@@ -98,7 +98,7 @@ returns, to be able to write the executable again.
 (output ordering in `.ck` files, e.g. `wait-killed`: `child-bad: exit(-1)` then parent line).
 ⚠️ Print only if user process; kernel threads (idle, main, test threads) have
 `pagedir == NULL`; load failure prints (accepted by `exec-missing.ck`).
-⚠️ Kernel kill (`exception.c`): `exit_code` default is -1 ⇒ `wait` returns -1 ⇒ `wait-killed` ✅.
+⚠️ Kernel kill (`pintos/src/userprog/exception.c`): `exit_code` default is -1 ⇒ `wait` returns -1 ⇒ `wait-killed` ✅.
 
 ## 7. `process_wait(child_tid)`
 ```
@@ -111,9 +111,9 @@ return code
 ```
 - `wait-twice`: second call finds nothing ⇒ -1 ✅. `wait-bad-pid`: pid not in list ⇒ -1 ✅.
 - Child already dead: semaphore already upped ⇒ `sema_down` returns immediately ✅.
-- Initial thread's `children` list must be initialised (it is `init_thread`'d in `thread_init`).
+- Initial thread's `children` list must be initialised (it is `init_thread`'d in `thread_init` of `pintos/src/threads/thread.c`).
 
-## 8. `exec` / `wait` Syscalls (in `syscall.c`)
+## 8. `exec` / `wait` Syscalls (in `pintos/src/userprog/syscall.c`)
 - `sys_exec(cmd)`: `valid_string(cmd)` else exit(-1); `return process_execute (cmd)` (`TID_ERROR` = -1 ✅ same value as spec's `-1`).
 - `sys_wait(pid)`: `return process_wait (pid)`.
 - `exec-bound*`: string spans page boundary ⇒ handled by Phase 2 `valid_string`.

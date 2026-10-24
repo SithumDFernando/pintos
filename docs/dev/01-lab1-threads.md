@@ -1,8 +1,8 @@
 # Lab 1 — Threads: Alarm Clock, Priority Scheduling/Donation, MLFQS
 
 **Spec**: [P1_threads.md](../labs/P1_threads.md)
-**Files**: `devices/timer.c`, `threads/thread.[ch]`, `threads/synch.[ch]`, `threads/fixed-point.h` (new)
-**Tests**: 27 in `tests/threads` (`make check` from `threads/`)
+**Files**: `pintos/src/devices/timer.c`, `pintos/src/threads/thread.[ch]`, `pintos/src/threads/synch.[ch]`, `pintos/src/threads/fixed-point.h` (new)
+**Tests**: 27 in `pintos/src/tests/threads` (`make check` from `pintos/src/threads/` in container)
 
 > Baseline (verified): `timer_sleep()` busy-waits with `thread_yield()`;
 > `thread_unblock()` does `list_push_back(&ready_list)`; `timer_interrupt()`
@@ -11,7 +11,7 @@
 ## Phase 1 — Alarm Clock (6 tests)
 
 **Data**: add `int64_t wake_tick;` to `struct thread`; a static
-`struct list sleep_list` in `timer.c` ordered by `wake_tick`; the thread's
+`struct list sleep_list` in `pintos/src/devices/timer.c` ordered by `wake_tick`; the thread's
 `elem` is reused for the sleep list (safe: a sleeping thread is blocked).
 
 **`timer_sleep(ticks)`**
@@ -62,7 +62,7 @@ struct list_elem elem;` (or recompute from `semaphore.waiters`).
 
 ## Phase 4 — MLFQS (9 tests)
 
-1. `threads/fixed-point.h` — 17.14 format, `#define F (1<<14)`: `int_to_fp`,
+1. `pintos/src/threads/fixed-point.h` — 17.14 format, `#define F (1<<14)`: `int_to_fp`,
    `fp_to_int_zero`, `fp_to_int_nearest`, add/sub/mul/div (use `int64_t`
    intermediate for mul/div).
 2. `struct thread`: `int nice; fixed recent_cpu;` ; global `fixed load_avg`.
@@ -78,5 +78,5 @@ struct list_elem elem;` (or recompute from `semaphore.waiters`).
 
 ## Checklist & Docs
 - [ ] Phase 1  - [ ] Phase 2  - [ ] Phase 3  - [ ] Phase 4
-- [ ] `threads/DESIGNDOC` (data structures, algorithms, synchronization, rationale)
-- Run: `cd threads && make check` (inside Docker).
+- [ ] `pintos/src/threads/DESIGNDOC` (data structures, algorithms, synchronization, rationale)
+- Run: `cd /pintos/src/threads && make check` (inside Docker).

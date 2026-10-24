@@ -20,6 +20,27 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool extract_prog_name (const char *cmdline, char *prog, size_t size);
+
+/* Copies the first space-delimited token of CMDLINE into PROG
+   (capacity SIZE, including the terminating null).  Returns false
+   if CMDLINE has no token or the token does not fit.  Uses a
+   caller-supplied buffer, so it is safe to call from any thread. */
+static bool
+extract_prog_name (const char *cmdline, char *prog, size_t size)
+{
+  size_t len = 0;
+
+  while (*cmdline == ' ')
+    cmdline++;
+  while (cmdline[len] != '\0' && cmdline[len] != ' ')
+    len++;
+  if (len == 0 || len >= size)
+    return false;
+  memcpy (prog, cmdline, len);
+  prog[len] = '\0';
+  return true;
+}
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -29,17 +50,23 @@ tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy;
+  char prog_name[NAME_MAX + 1];   /* Small: at most 15 bytes. */
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
+  /* The thread is named after the program only, not the whole
+     command line.  An empty command line cannot be executed. */
+  if (!extract_prog_name (file_name, prog_name, sizeof prog_name))
+    return TID_ERROR;
+
+  /* Make a copy of FILE_NAME (the full command line).
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* Create a new thread to execute the program. */
+  tid = thread_create (prog_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -195,7 +222,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char *cmdline);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -206,14 +233,18 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *cmdline, void (**eip) (void), void **esp) 
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
+  char file_name[NAME_MAX + 1];   /* Program name only. */
   off_t file_ofs;
   bool success = false;
   int i;
+
+  if (!extract_prog_name (cmdline, file_name, sizeof file_name))
+    return false;
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
@@ -302,7 +333,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, cmdline))
     goto done;
 
   /* Start address. */
@@ -424,10 +455,95 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   return true;
 }
 
-/* Create a minimal stack by mapping a zeroed page at the top of
-   user virtual memory. */
+/* Writes the arguments of CMDLINE onto the (not yet installed)
+   stack page KPAGE, which will be mapped at PHYS_BASE - PGSIZE,
+   following the 80x86 calling convention.  On success stores the
+   resulting user stack pointer in *ESP.  Fails, without touching
+   anything outside KPAGE, if the arguments do not fit in one page.
+
+   Everything is addressed as an offset OFF into KPAGE (OFF ==
+   PGSIZE corresponds to PHYS_BASE), so we never depend on which
+   page directory is active. */
 static bool
-setup_stack (void **esp) 
+push_arguments (uint8_t *kpage, const char *cmdline, void **esp)
+{
+  /* Scratch pages keep the kernel stack small. */
+  char *copy = palloc_get_page (0);
+  char **tok = palloc_get_page (0);   /* Tokens in COPY. */
+  uint32_t *addr = palloc_get_page (0); /* User address of each string. */
+  const size_t max_args = PGSIZE / sizeof (char *);
+  bool success = false;
+
+  if (copy != NULL && tok != NULL && addr != NULL)
+    {
+      char *token, *save_ptr;
+      size_t argc = 0, str_bytes = 0, off, i;
+      uint8_t *base = (uint8_t *) PHYS_BASE - PGSIZE;
+
+      /* Pass 1: tokenize a private copy (strtok_r mutates it);
+         consecutive spaces collapse into one delimiter. */
+      strlcpy (copy, cmdline, PGSIZE);
+      for (token = strtok_r (copy, " ", &save_ptr); token != NULL;
+           token = strtok_r (NULL, " ", &save_ptr))
+        {
+          if (argc >= max_args)
+            goto done;
+          tok[argc++] = token;
+          str_bytes += strlen (token) + 1;
+        }
+
+      /* Reject before writing: strings + up to 3 padding bytes +
+         argv[] with its null sentinel + argv, argc, return address. */
+      if (argc == 0
+          || str_bytes + 3 + sizeof (char *) * (argc + 1)
+             + 3 * sizeof (uint32_t) > PGSIZE)
+        goto done;
+
+      /* Pass 2: copy the strings, highest address first. */
+      off = PGSIZE;
+      for (i = 0; i < argc; i++)
+        {
+          size_t len = strlen (tok[i]) + 1;
+          off -= len;
+          memcpy (kpage + off, tok[i], len);
+          addr[i] = (uint32_t) (base + off);
+        }
+
+      /* Word-align (page is zeroed, so padding bytes are 0). */
+      off &= ~3u;
+
+      /* argv[argc] = NULL, then argv[argc-1] ... argv[0]. */
+      off -= sizeof (uint32_t);
+      *(uint32_t *) (kpage + off) = 0;
+      for (i = argc; i > 0; i--)
+        {
+          off -= sizeof (uint32_t);
+          *(uint32_t *) (kpage + off) = addr[i - 1];
+        }
+
+      /* argv (address of argv[0]), argc, fake return address. */
+      off -= sizeof (uint32_t);
+      *(uint32_t *) (kpage + off) = (uint32_t) (base + off + sizeof (uint32_t));
+      off -= sizeof (uint32_t);
+      *(uint32_t *) (kpage + off) = argc;
+      off -= sizeof (uint32_t);
+      *(uint32_t *) (kpage + off) = 0;
+
+      *esp = base + off;
+      success = true;
+    }
+
+ done:
+  palloc_free_page (copy);
+  palloc_free_page (tok);
+  palloc_free_page (addr);
+  return success;
+}
+
+/* Create the initial stack by mapping a zeroed page at the top of
+   user virtual memory and pushing the arguments of CMDLINE. */
+static bool
+setup_stack (void **esp, const char *cmdline) 
 {
   uint8_t *kpage;
   bool success = false;
@@ -435,10 +551,10 @@ setup_stack (void **esp)
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
+      /* Fill the page first so that failure only needs to free it. */
+      success = push_arguments (kpage, cmdline, esp)
+                && install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      if (!success)
         palloc_free_page (kpage);
     }
   return success;

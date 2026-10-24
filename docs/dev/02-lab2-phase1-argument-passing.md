@@ -1,10 +1,10 @@
 # Lab 2 / Phase 1 — Argument Passing
 
-**Spec**: [P2 §4.3.3–4.5](../labs/P2_user_programs.md) · **Files**: `userprog/process.c`
+**Spec**: [P2 §4.3.3–4.5](../labs/P2_user_programs.md) · **Files**: `pintos/src/userprog/process.c`
 **Tests**: `args-none`, `args-single`, `args-multiple`, `args-many`, `args-dbl-space`
 **Depends on**: minimal `exit` + `write(1)` (Phase 3) and a bootstrap `process_wait` (Phase 4)
 
-## 1. Current State (verified in `process.c`)
+## 1. Current State (verified in `pintos/src/userprog/process.c`)
 
 | Function | Today | Problem |
 |----------|-------|---------|
@@ -81,13 +81,13 @@ is the safer, explicit option — recommended to avoid depending on activation.
 
 ## 3. Implementation Steps
 
-1. Edit `process_execute` (name split, `TID_ERROR` on empty).
+1. Edit `process_execute` in `pintos/src/userprog/process.c` (name split, `TID_ERROR` on empty).
 2. Change `load()` / `setup_stack()` prototypes (`static` ⇒ safe to change).
 3. Implement helper `static bool push_arguments (void **esp, uint8_t *kpage, const char *cmdline)`.
 4. Temporarily `hex_dump ((uintptr_t) *esp, *esp, PHYS_BASE - *esp, true);`
    (from `<stdio.h>`) to compare with the spec table; **remove before submission**.
 5. Run with `pintos -v -k --fs-disk=2 -p tests/userprog/args-many:args-many -- -q run 'args-many a b c'`
-   (adapt paths) and compare `argc`/`argv` printed by `args.c`.
+   (inside Docker container) and compare `argc`/`argv` printed by `pintos/src/tests/userprog/args.c`.
 
 ## 4. Acceptance Criteria
 - ✅ `args-none` … `args-dbl-space` pass.

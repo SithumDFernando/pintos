@@ -33,13 +33,13 @@ make check                                 # full suite (76 tests; long)
 
 ### 1.4 Robustness extras (manual)
 Not covered by `.ck` but listed in the TODO: oversize cmdline, 100+ open files, many nested execs,
-`remove` of running binary, `exec ""`, `wait(-1)`. Write ad-hoc programs under `src/examples/` if desired.
+`remove` of running binary, `exec ""`, `wait(-1)`. Write ad-hoc programs under `pintos/src/examples/` if desired.
 
 ### 1.5 Flakiness checklist
 - Race on `ref_cnt` / `children` (Phase 4) → run `multi-recurse`, `exec-multiple` ×10.
 - Lock inversion (`fs_lock` + console) → watch for hangs (use `-T` timeout).
 
-## 2. Design Document (`userprog/DESIGNDOC`)
+## 2. Design Document (`pintos/src/userprog/DESIGNDOC`)
 
 > ⚠️ No template exists in the repository. Recreate the standard Pintos layout:
 

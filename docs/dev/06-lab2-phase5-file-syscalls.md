@@ -1,10 +1,10 @@
 # Lab 2 / Phase 5 — File System Syscalls
 
-**Files**: `userprog/syscall.c`
+**Files**: `pintos/src/userprog/syscall.c`
 **Tests**: `create-*` (7), `open-*` (7), `close-*` (5), `read-*` (6), `write-*` (6)
 **Depends on**: Phase 2 (validation), Phase 3 (fd table, `fs_lock`)
 
-Uses the existing API (do not modify `filesys/`): `filesys_create(name, size)`,
+Uses the existing API (do not modify `pintos/src/filesys/`): `filesys_create(name, size)`,
 `filesys_remove(name)`, `filesys_open(name)`, `file_read/write/seek/tell/length/close`.
 
 ## 1. Per-Syscall Specification
@@ -28,7 +28,7 @@ Test-driven decisions (verified in `.ck` files):
 - `open-empty`: must return `-1`.
 - `write-stdin`, `read-stdout`, `close-stdin/stdout`, `*-bad-fd`: *either* silent failure *or* exit(-1). Choice: **return -1 / ignore** (no process death) — lets a program continue after a mistake; document in design doc.
 - `write-zero`/`read-zero`: return 0.
-- `read-normal` etc. need `sample.txt` installed (handled by `Make.tests` `PUTFILES`).
+- `read-normal` etc. need `pintos/src/tests/userprog/sample.txt` installed (handled by `pintos/src/tests/userprog/Make.tests` `PUTFILES`).
 
 ## 2. Return-Value Details
 - `read`: bytes actually read (may be < n at EOF); `0` at EOF.
@@ -48,8 +48,8 @@ Test-driven decisions (verified in `.ck` files):
 ## 5. Implementation Steps
 1. Implement `fd_alloc / fd_lookup / fd_remove` helpers (Phase 3).
 2. Implement handlers one by one in test order: `create` → `open` → `close` → `read` → `write` → `seek/tell/filesize` → `remove`.
-3. Build user programs (`make` in `src/examples` is not needed for tests; tests are built by `make check`).
-4. Run groups: `make tests/userprog/create-normal.result` etc.
+3. Build user programs (`make` in `pintos/src/examples/` is not needed for tests; tests are built by `make check`).
+4. Run groups: `make tests/userprog/create-normal.result` etc. (in container).
 
 ## 6. Pitfalls
 - ⚠️ Do **not** keep `fs_lock` held when calling `thread_exit()` on a bad pointer (validate first).

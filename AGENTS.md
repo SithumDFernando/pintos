@@ -30,14 +30,27 @@ Always proceed in the following ordered steps:
 2. **Design Document** (`DESIGNDOC`):
    - Formulate and update the formal design document (e.g., `pintos/src/userprog/DESIGNDOC`) before finalizing implementations.
    - Provide clear justifications for data structures, algorithms, synchronisation primitives, and trade-offs.
-3. **Incremental Implementation**:
-   - Follow the established phase dependency order:
-     1. Argument Passing (`process.c`)
-     2. Syscall Dispatcher, FD Table & FS Lock (`syscall.c`, `thread.h`)
-     3. User Memory Access & Validation (`syscall.c`, `exception.c`)
-     4. Process Control & Synchronization (`exec`, `wait`, `exit` via shared `child_status`)
-     5. File System Syscalls (`create`, `open`, `read`, `write`, `close`, etc.)
-     6. Denying Writes to Running Executables (`load()`, `file_deny_write()`)
+3. **Incremental Implementation & Phase Completion Protocol**:
+   - Implement one phase at a time following the established phase dependency order:
+     1. Design Document Initialization (`pintos/src/userprog/DESIGNDOC`)
+     2. Argument Passing (`pintos/src/userprog/process.c`)
+     3. Syscall Dispatcher, FD Table & FS Lock (`pintos/src/userprog/syscall.c`, `pintos/src/threads/thread.h`)
+     4. User Memory Access & Validation (`pintos/src/userprog/syscall.c`, `pintos/src/userprog/exception.c`)
+     5. Process Control & Synchronization (`exec`, `wait`, `exit` via shared `child_status` in `pintos/src/userprog/process.c`, `pintos/src/threads/thread.[ch]`)
+     6. File System Syscalls (`create`, `open`, `read`, `write`, `close`, etc. in `pintos/src/userprog/syscall.c`)
+     7. Denying Writes to Running Executables (`pintos/src/userprog/process.c`)
+     8. Full Test Suite & Final Submission Package
+   - **MANDATORY PAUSE AFTER EACH PHASE**:
+     - Stop tool execution immediately after completing and verifying the phase.
+     - Update [docs/dev/worksummary.md](file:///c:/Users/sithu/MyWorks/UOM/Sem_3/OS/pintos_240159J/docs/dev/worksummary.md) recording:
+       - Phase name & objective.
+       - Exact files modified (with paths relative to workspace root).
+       - Key design decisions & trade-offs made.
+       - Test verification results.
+     - Provide the user with:
+       - A descriptive **git commit message**.
+       - A **ready-to-paste prompt** for initiating the next phase.
+
 4. **Testing & Verification**:
    - Run individual test targets (e.g., `make tests/userprog/args-single.result`) before executing the full suite (`make check`).
    - Clean up all temporary debugging `printf` statements and `hex_dump` calls before test verification.
@@ -46,6 +59,9 @@ Always proceed in the following ordered steps:
 ---
 
 ## 4. Kernel Architecture & Coding Standards
+- **Path Reference Rule**:
+  - In all documentation, plans, reports, messages, and code comments, always use relative paths originating from the workspace root (e.g., `pintos/src/userprog/process.c`, `pintos/src/threads/thread.h`, `docs/dev/02-lab2-phase1-argument-passing.md`).
+  - Never use naked/isolated file names (e.g. avoid `process.c`) without their containing path from the root, except when discussing commands executed strictly inside a specific container directory.
 - **Kernel Stack Limits**:
   - Each thread page is 4 KB total (struct thread at bottom, stack growing down from top).
   - Never allocate large arrays or buffers as local stack variables.
