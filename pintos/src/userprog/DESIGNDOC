@@ -15,13 +15,12 @@ Fernando H. T. S. D. <sithum.24@cse.mrt.ac.lk>
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
-This is an individual project submission for the CS 2043 Operating Systems
-module (Semester 3, Department of Computer Science & Engineering,
-University of Moratuwa).
-- Student Name: Fernando H. T. S. D.
-- Index / University ID: 240159J
-- Target: Lab 2 (User Programs & System Calls)
-- Test Verification: All 80 test cases passing (100%).
+Individual submission for CS 2043 Operating Systems, Semester 3,
+Department of CSE, University of Moratuwa.
+- Name: Fernando H. T. S. D.
+- Index: 240159J
+- Lab 2 (User Programs & System Calls)
+- All 80 tests passing.
 
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
@@ -38,21 +37,22 @@ University of Moratuwa).
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-No new structs, globals or typedefs.  New static functions in
-pintos/src/userprog/process.c:
+No new structs, globals, or typedefs were needed.  I added two static
+helper functions in pintos/src/userprog/process.c:
 
   static bool extract_prog_name (const char *cmdline, char *prog,
                                  size_t size);
-      Copies the first space-delimited token (program name) into a
-      caller-supplied buffer.
+      Copies the first space-delimited token (the program name) into
+      a caller-supplied buffer.
 
   static bool push_arguments (uint8_t *kpage, const char *cmdline,
                               void **esp);
-      Builds argv/argc/return-address on the stack page before it is
-      mapped.
+      Writes argv/argc/return-address onto the stack page before it
+      gets mapped into the process address space.
 
-Changed signatures: setup_stack () now takes the command line; load ()
-names its first parameter `cmdline' (it receives the full command line).
+I also changed signatures: setup_stack () now takes the command line
+as a parameter, and load () receives the full command line in its
+first argument (renamed to `cmdline').
 
 ---- ALGORITHMS ----
 
@@ -84,8 +84,8 @@ directory, and a failure only needs to free kpage.
     argv[0]), argc and a fake return address 0.  *esp is set to the
     fake return address.
 
-The overflow check happens before any byte is written, so a huge
-command line cannot corrupt memory; it simply makes exec fail.
+I do the overflow check before writing anything, so a huge command
+line can't corrupt memory -- it just makes exec fail cleanly.
 
 Stack layout diagram for command `/bin/ls -l foo bar` (argc = 4):
 
@@ -133,73 +133,83 @@ kernel; strtok_r () keeps the state in a caller-supplied save_ptr.
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+I introduced the following:
+
 struct child_status (pintos/src/userprog/process.h):
   tid_t tid; int exit_code; bool load_ok; bool load_done;
   char *fn_copy; struct semaphore load_sema; struct semaphore exit_sema;
   int ref_cnt; struct lock ref_lock; struct list_elem elem;
-  Coordinates process creation, load status, exit code, and
-  synchronization between parent and child via reference counting.
+  Shared between parent and child to track exit status, load
+  outcome, and synchronization.  Reference-counted so either
+  side can exit first without leaking memory.
 
 struct thread (pintos/src/threads/thread.h, under USERPROG), new members:
-  int exit_code;                      Status given to exit(); -1 by default.
-  struct list fd_list;                This process's open files (struct fd_entry).
-  int next_fd;                        Next descriptor to hand out; starts at 2.
-  struct list children;               Child processes (struct child_status).
-  struct child_status *my_status;     Shared status record with parent.
-  struct file *executable;            Running executable handle; write denied.
+  int exit_code;                      Status given to exit(). Defaults to -1.
+  struct list fd_list;                Open files for this process (fd_entry nodes).
+  int next_fd;                        Next fd number to assign (starts at 2).
+  struct list children;               List of child_status records.
+  struct child_status *my_status;     Points to this thread's own child_status.
+  struct file *executable;            Open handle to running binary (write-denied).
 
 struct fd_entry (pintos/src/userprog/syscall.c):
   int fd; struct file *file; struct list_elem elem;
-  One open file of a process: descriptor, file, list link.
+  Represents one open file for a process.
 
 struct lock fs_lock (pintos/src/userprog/syscall.c):
-  Global lock serializing every file system call.
+  Global lock that serializes all file system calls.
 
 static const int syscall_nargs[] (pintos/src/userprog/syscall.c):
-  Argument count per syscall number; unknown numbers are rejected.
+  Lookup table for how many arguments each syscall takes.
 
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
 
-Descriptors are unique within a single process.  Each thread keeps a
-list of fd_entry nodes; fd_alloc () gives the next number (0 and 1 are
-the console), fd_lookup () scans the list, fd_close () and
-fd_close_all () free the nodes.  A new thread starts with an empty
-list, so descriptors are not inherited.  A list was chosen over a
-fixed array to keep struct thread small (+12 bytes instead of +512)
-and to avoid an arbitrary descriptor limit.
+File descriptors are unique within a single process, not globally.
+Each thread has a linked list of fd_entry nodes.  fd_alloc () hands
+out the next number (0 and 1 are reserved for the console),
+fd_lookup () walks the list, and fd_close () / fd_close_all () clean
+up.  A new thread starts with an empty list, so children don't
+inherit parent descriptors.  I chose a linked list over a fixed-size
+array to keep struct thread small (only +12 bytes vs +512 for an
+array) and to avoid putting an arbitrary cap on how many files a
+process can open.
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
 
-Approach: verify-then-dereference.  Helpers in
-pintos/src/userprog/syscall.c:
-  valid_byte (p)      p != NULL, p < PHYS_BASE and the page is mapped
-                      (pagedir_get_page ()).
-  valid_range (p, n)  n == 0 is accepted; otherwise rejects address
-                      wrap-around, checks the first and last byte and
-                      one byte of every page in between.
-  valid_string (s)    scans to the NUL, re-checking at the start and on
-                      each page boundary; gives up after one page.
-The handler validates the stack word with the syscall number and the
-1+N argument words (so sc-bad-sp and sc-bad-arg die before anything is
-read), copies the arguments into a kernel array and dispatches.
-Buffers (read/write) are checked with valid_range () and strings
-(exec/create/open/remove) with valid_string () before any use and
-before fs_lock is taken.  Any failure calls syscall_exit (-1).
+I went with the verify-then-dereference approach.  I wrote three
+helper functions in pintos/src/userprog/syscall.c:
+  valid_byte (p)      checks p != NULL, p < PHYS_BASE, and the page
+                      is actually mapped (pagedir_get_page ()).
+  valid_range (p, n)  accepts zero length; otherwise rejects address
+                      wrap-around, checks the first and last byte,
+                      and one byte on every page in between.
+  valid_string (s)    walks to the NUL byte, re-checking at the start
+                      and on each page boundary.  Gives up after one
+                      page (4096 bytes) to avoid scanning forever.
+In the handler, I first validate the stack word holding the syscall
+number and the 1+N argument words (this is why sc-bad-sp and
+sc-bad-arg are caught before anything gets read).  Then I copy the
+arguments into a kernel-side array and dispatch.  Buffers for
+read/write go through valid_range () and filename strings for
+exec/create/open/remove go through valid_string (), always before
+taking fs_lock.  If any check fails I call syscall_exit (-1).
 
-Backstop (pintos/src/userprog/exception.c): kill () sets exit_code to
--1 before thread_exit (), so user-mode faults (bad-read, bad-jump, ...)
-print "name: exit(-1)" via process_exit () and free their resources.
-A kernel-mode page fault on a user address also terminates the process
-instead of panicking the kernel.
+As a backstop, I also modified kill () in
+pintos/src/userprog/exception.c to set exit_code = -1 before calling
+thread_exit (), so user-mode faults like bad-read or bad-jump still
+print the "name: exit(-1)" message and clean up properly.  I added a
+check in page_fault () so that a kernel-mode fault on a user address
+kills the process instead of panicking the kernel.
 
-Alternative rejected: get_user ()/put_user () with fault recovery is
-faster but needs assembly helpers and careful release of resources
-from the fault handler; the explicit checks are simpler to verify.
+I considered the get_user ()/put_user () approach with fault recovery
+but decided against it -- it would be faster, but it needs inline
+assembly helpers and makes resource cleanup from the fault path
+harder to get right.  The explicit page-table checks felt simpler to
+reason about and debug.
 
 >> B4: Suppose a system call causes a full 4,096-byte page to be read
 >> from or written to user memory.  What is the least number of
@@ -209,54 +219,50 @@ from the fault handler; the explicit checks are simpler to verify.
 >> Is your code capable of being modified to read or write only parts of
 >> a page in user memory?
 
-In valid_range (uaddr, size):
-- For a 4,096-byte copy:
-  - Least inspections: 2 calls to pagedir_get_page ().  If the buffer
-    is page-aligned, valid_byte (start) and valid_byte (last) both
-    check the same page.  The loop pg_round_down (start) + PGSIZE < last
-    does not execute.  (Both ends checked: 2 calls).
-  - Greatest inspections: 3 calls to pagedir_get_page ().  If the
-    buffer is not page-aligned, start lies on page P0 and last lies on
-    page P1.  valid_byte (start) checks P0 (1 call), valid_byte (last)
-    checks P1 (1 call), and the loop checks the boundary page (1 call).
-- For two consecutive bytes:
-  - Exactly 2 inspections in both cases: valid_byte (start) and
-    valid_byte (last).  The loop does not run.
+Looking at my valid_range (uaddr, size) implementation:
+- 4,096-byte copy:
+  Least: 2 calls to pagedir_get_page ().  This happens when the
+  buffer is page-aligned, so valid_byte (start) and valid_byte (last)
+  land on the same page and the loop doesn't run.
+  Most: 3 calls.  When the buffer straddles a page boundary, start
+  is on one page and last is on the next, so I get one call for
+  start, one for last, and one from the loop for the boundary page.
+- Two consecutive bytes:
+  Always exactly 2 calls -- valid_byte (start) and valid_byte (last).
+  The loop body never executes since there's no intermediate page.
 - Partial page transfer:
-  Our code validates the whole buffer upfront and aborts with exit(-1)
-  if any byte is invalid, preserving atomic failure semantics.  It
-  could be modified to read/write partial pages by chunking the
-  transfer page-by-page until an unmapped address is encountered.
+  Right now I validate the entire buffer upfront and kill the process
+  if any part is invalid (all-or-nothing).  It could be changed to
+  do page-by-page transfers, stopping at the first unmapped page,
+  but I didn't need that for this project.
 
 >> B5: How does your code ensure that wait() will fail for a given
 >> process id if the process was not created by the calling process, or
 >> if the calling process has already called wait() on that process?
 
-The parent scans its own cur->children list looking for a child_status
-whose tid matches child_tid.  If no matching record is found (e.g. invalid
-tid, or a grandchild belonging to another thread's children list),
-process_wait () immediately returns -1.  When a matching child_status is
-found, the parent waits on cs->exit_sema, reads cs->exit_code, and
-immediately removes cs from cur->children with list_remove (&cs->elem)
-before releasing its reference.  Any subsequent call to wait () for the
-same tid fails to find the entry and returns -1.
+In process_wait (), I scan cur->children looking for a child_status
+whose tid matches child_tid.  If there's no match -- maybe the tid is
+invalid, or it belongs to a grandchild -- I return -1 right away.
+When I do find a match, I block on cs->exit_sema until the child
+exits, read cs->exit_code, and then immediately remove cs from the
+children list and release my reference.  Because I remove it from the
+list straight away, any second call to wait () on the same tid won't
+find it and will return -1.
 
 >> B6: Any access to user memory could fail if the user passed an
 >> invalid pointer.  Why does your code not leak resources when this
 >> happens?  Do you have to make any special effort to prevent resource
 >> leaks in such cases?
 
-Every user pointer, string, and buffer is validated before any kernel
-resource (file descriptor, malloc heap memory, or global lock) is
-allocated or acquired.  Specifically:
-1. Syscall numbers and arguments are validated before reading.
-2. User strings and buffers are validated before taking fs_lock.
-3. If validation fails, syscall_exit (-1) invokes process_exit (),
-   which unconditionally closes and frees all open files in fd_list,
-   releases child status structures, signals exit status, and cleans
-   up the page directory.
-Because validation precedes resource acquisition and cleanup is
-centralized in process_exit (), no resources can leak.
+I validate every user pointer, string, and buffer before allocating
+or acquiring any kernel resource (like a file descriptor, malloc
+memory, or the fs_lock).  Syscall numbers and arguments are checked
+before I read them, and user strings/buffers are validated before I
+take fs_lock.  If any validation fails, syscall_exit (-1) triggers
+process_exit (), which closes all open files in fd_list, frees child
+status structures, signals exit_sema, and destroys the page directory.
+Since I always validate first and cleanup is all centralized in
+process_exit (), there's no path that can leak resources.
 
 ---- SYNCHRONIZATION ----
 
@@ -264,17 +270,20 @@ centralized in process_exit (), no resources can leak.
 >> child process has successfully loaded its executable?  What
 >> happens if the load fails?
 
-process_execute () allocates a struct child_status with load_sema
-initialized to 0 and load_ok initialized to false.  After calling
-thread_create (), the parent blocks on sema_down (&cs->load_sema).
-The child invokes load () inside start_process (); upon completion
-(success or failure), it records the outcome in cs->load_ok, sets
-cs->load_done = true, and calls sema_up (&cs->load_sema).  The parent
-unblocks: if cs->load_ok is true, it returns the child's tid; if false,
-it removes cs from cur->children, drops its reference, and returns
-TID_ERROR (-1).  If the child is terminated or faults before completing
-load, process_exit () detects !cs->load_done, sets cs->load_ok = false,
-and ups load_sema so the parent never hangs.
+In process_execute (), I allocate a child_status with load_sema = 0
+and load_ok = false, then call thread_create ().  The parent
+immediately blocks on sema_down (&cs->load_sema).  Over in the child
+thread, start_process () calls load ().  Once load finishes (pass or
+fail), the child writes the result into cs->load_ok, sets
+cs->load_done = true, and does sema_up (&cs->load_sema) to wake the
+parent.  The parent then checks cs->load_ok: if true, it returns the
+child's tid; if false, it removes cs from the children list, drops
+its reference, and returns TID_ERROR.
+
+There's also a safety net: if the child gets killed before it even
+finishes loading (e.g., it page-faults during load), process_exit ()
+checks !cs->load_done and ups load_sema anyway, so the parent never
+deadlocks.
 
 >> B8: Consider parent process P and child process C.  Some possible
 >> termination orders are:
@@ -284,42 +293,40 @@ and ups load_sema so the parent never hangs.
 >> In each case, describe the events that occur, including the timing of
 >> the release of the process's resources.
 
-Each child_status has a ref_cnt initially set to 2 (one reference held
-by P in cur->children, one held by C in cur->my_status), protected by
-ref_lock.
+Each child_status starts with ref_cnt = 2 (one for the parent, one
+for the child), protected by ref_lock.
 
-1. P terminates before C:
-   In process_exit (), P iterates through cur->children, removing each
-   child_status and calling release_status (), decrementing ref_cnt to 1.
-   P exits and its thread page is freed.  When C later terminates, C's
-   process_exit () sets cs->exit_code, ups cs->exit_sema (unconsumed),
-   and calls release_status (), decrementing ref_cnt to 0, which frees
-   the struct child_status.  No zombie leak occurs.
+1. P exits before C:
+   When P calls process_exit (), it walks cur->children and calls
+   release_status () on each one, dropping ref_cnt to 1.  P's thread
+   page gets freed.  Later when C exits, it sets cs->exit_code, ups
+   exit_sema (nobody's listening, but that's fine), and calls
+   release_status () which drops ref_cnt to 0 and frees the struct.
+   No memory leaks.
 
-2. C terminates before P calls wait() on C:
-   In process_exit (), C sets cs->exit_code, calls sema_up (&cs->exit_sema),
-   and calls release_status (), decrementing ref_cnt to 1.  C's thread
-   page and user memory are completely freed, but child_status remains
-   allocated in P's children list.  When P later calls process_wait (C),
-   sema_down (&cs->exit_sema) succeeds immediately without blocking.
-   P reads cs->exit_code, removes cs from cur->children, and calls
-   release_status (), decrementing ref_cnt to 0 and freeing child_status.
+2. C exits before P waits:
+   C's process_exit () stores its exit code, does sema_up on
+   exit_sema, and drops its reference (ref_cnt goes to 1).  C's
+   thread page and user memory get freed, but the child_status stays
+   alive in P's children list.  When P eventually calls
+   process_wait (), sema_down returns immediately since the semaphore
+   was already upped.  P reads the exit code, removes cs from the
+   list, and releases its reference, freeing the child_status.
 
-3. C terminates after P calls wait() on C:
-   P finds C in cur->children and blocks on sema_down (&cs->exit_sema).
-   When C terminates, process_exit () records cs->exit_code, calls
-   sema_up (&cs->exit_sema) waking P, and drops C's reference (ref_cnt
-   becomes 1).  P unblocks, reads the exit code, removes cs from
-   cur->children, and calls release_status (), decrementing ref_cnt to 0
-   and freeing child_status.
+3. P waits while C is still running:
+   P finds C's entry in cur->children and blocks on exit_sema.  When
+   C finishes and calls process_exit (), it records the exit code,
+   ups exit_sema (waking P), and drops its reference.  P wakes up,
+   grabs the exit code, removes cs, and calls release_status () to
+   free it.
 
 >> B9: The file system is not thread-safe.  How do you protect it?
 
-A single global fs_lock.  load () holds it for all of its file
-accesses; fd_close () and fd_close_all () take it around file_close ().
-User memory is validated before the lock is taken, and the lock is
-never held while waiting for a child or creating a process, so it
-cannot be part of a deadlock cycle.
+I use a single global fs_lock.  load () holds it for all its file
+operations, and fd_close () / fd_close_all () acquire it around
+file_close ().  I always validate user memory before taking the lock,
+and I never hold it while waiting for a child or creating a process,
+so there's no way it can cause a deadlock.
 
 ---- RATIONALE ----
 
@@ -327,58 +334,54 @@ cannot be part of a deadlock cycle.
 >> descriptors (e.g. negative values, descriptors not opened by this
 >> process, stdin/stdout misuse)?
 
-When given an invalid file descriptor (negative values, unknown/closed
-descriptors, writing to stdin, or reading from stdout), our code
-returns an error code (-1 for read/write/filesize/tell, false for close,
-and ignores seek) rather than terminating the process.
-Rationale:
-1. Conforms to standard POSIX semantics (EBADF returns -1; not SIGSEGV).
-2. A bad pointer violates memory protection and must kill the process,
-   whereas an invalid descriptor is an ordinary runtime error that a
-   well-behaved application can inspect, handle, and recover from.
-3. Test suites (read-bad-fd, write-stdin, close-stdin, etc.) accept -1
-   or false, allowing processes to continue executing normally.
+If a process passes a bad file descriptor -- negative, not open,
+writing to stdin, reading from stdout -- I return an error value (-1
+for read/write/filesize/tell, false for close, and just ignore seek)
+instead of killing the process.  My reasoning is that a bad fd is a
+normal runtime error, not a memory violation.  The process should be
+able to check the return value and handle it, similar to how Unix
+systems work.  A bad *pointer* is different -- that's a protection
+fault and the process has to die.  This approach also lines up with
+what the tests expect (read-bad-fd, write-stdin, etc. all check
+that the process survives and gets -1 back).
 
 >> B11: How does your implementation map a process id to a kernel
 >> thread id?
 
-Pintos adheres to a 1:1 threading model for user processes: each user
-process corresponds directly to exactly one kernel thread.  Therefore,
-the process id (pid_t) is identical to the kernel thread id (tid_t).
-No translation table is necessary.
+In Pintos each user process is backed by exactly one kernel thread,
+so I just use the tid as the pid directly.  pid_t and tid_t are the
+same thing and I don't need any kind of translation table.
 
 >> B12: How does your implementation prevent writes to running
 >> executables?  Why is the file kept open rather than only holding
 >> an inode or relying on an external lock?
 
-In load () (pintos/src/userprog/process.c), after ELF segments and the
-initial stack are successfully validated and loaded, the kernel calls
-file_deny_write (file) and records the open handle in t->executable
-without calling file_close (file) at the done: label.
+After load () successfully reads the ELF segments and sets up the
+stack, I call file_deny_write (file) and store the open file handle
+in t->executable instead of closing it at the done: label.
 
-Rationale and mechanisms:
-1. Lifecycle of write-denial: Pintos ties inode write denial directly
-   to the open struct file handle.  file_deny_write () sets
-   file->deny_write = true and increments inode->deny_write_cnt.  When
-   file_close () is invoked, it automatically calls file_allow_write (),
-   which decrements inode->deny_write_cnt.  Closing the file at load-time
-   would immediately undo write-denial.  Keeping the file open preserves
-   protection for the process's entire execution lifetime.
-2. Concurrent executions: Multiple concurrent processes running the same
-   binary (e.g. rox-multichild) each open a distinct struct file for the
-   same inode and call file_deny_write (), incrementing inode->deny_write_cnt.
-   Writes remain disallowed until all instances have terminated and closed
-   their respective handles.
-3. Order-of-events synchronization: In process_exit (), cur->executable
-   is closed under fs_lock before signaling cs->exit_sema to wake the
-   parent.  This ensures that when a parent's wait () returns, writes
-   to the child binary are guaranteed to be re-enabled on disk (verified
-   by rox-child).
-4. Failure safety: If load () fails at any point, the open file is closed
-   immediately at done:, ensuring no handle leaks and that write-denial is
-   not left active.  If a process terminates abnormally (e.g. killed by an
-   exception), process_exit () is still executed by thread_exit (),
-   reliably closing cur->executable under fs_lock.
+The key idea is that Pintos ties write-denial to the open file handle.
+file_deny_write () increments inode->deny_write_cnt, and file_close ()
+automatically calls file_allow_write () to decrement it.  If I closed
+the file right after loading, writes would be allowed again
+immediately, which defeats the purpose.  By keeping the file open for
+the entire lifetime of the process, writes stay denied until the
+process exits.
+
+For concurrent executions of the same binary (like in rox-multichild),
+each process opens its own struct file pointing to the same inode.
+Each one increments deny_write_cnt, so writes remain blocked until
+every instance terminates and closes its handle.
+
+In process_exit (), I close cur->executable under fs_lock *before*
+signaling exit_sema.  This ordering matters because the parent needs
+to see writes re-enabled by the time wait () returns (the rox-child
+test checks this).
+
+If load () fails partway through, the file gets closed at the done:
+label as usual, so there's no handle leak.  And if the process dies
+from an exception, thread_exit () still goes through process_exit (),
+so cur->executable always gets cleaned up.
 
                            SURVEY QUESTIONS
                            ================

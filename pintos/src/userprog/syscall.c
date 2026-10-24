@@ -87,9 +87,7 @@ valid_range (const void *uaddr, size_t size)
 }
 
 /* True iff S is a NUL-terminated string lying entirely in valid user
-   memory (at most MAX_USER_STRING bytes including the NUL).  Used by
-   the file and exec system calls in later phases. */
-static bool valid_string (const char *s);
+   memory (at most MAX_USER_STRING bytes including the NUL). */
 static bool
 valid_string (const char *s)
 {
