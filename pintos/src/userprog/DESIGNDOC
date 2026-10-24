@@ -103,23 +103,67 @@ kernel; strtok_r () keeps the state in a caller-supplied save_ptr.
                              SYSTEM CALLS
                              ============
 
-(To be completed in later phases.)
+(Partially completed: dispatcher, descriptor table and file system lock.
+The remaining answers are filled in during later phases.)
 
 ---- DATA STRUCTURES ----
 
->> B1 - B2: (pending)
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+struct thread (pintos/src/threads/thread.h, under USERPROG), new members:
+  int exit_code;         Status given to exit(); -1 by default (killed).
+  struct list fd_list;   This process's open files (struct fd_entry).
+  int next_fd;           Next descriptor to hand out; starts at 2.
+
+struct fd_entry (pintos/src/userprog/syscall.c):
+  int fd; struct file *file; struct list_elem elem;
+  One open file of a process: descriptor, file, list link.
+
+struct lock fs_lock (pintos/src/userprog/syscall.c):
+  Global lock serializing every file system call.
+
+static const int syscall_nargs[] (pintos/src/userprog/syscall.c):
+  Argument count per syscall number; unknown numbers are rejected.
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+
+Descriptors are unique within a single process.  Each thread keeps a
+list of fd_entry nodes; fd_alloc () gives the next number (0 and 1 are
+the console), fd_lookup () scans the list, fd_close () and
+fd_close_all () free the nodes.  A new thread starts with an empty
+list, so descriptors are not inherited.  A list was chosen over a
+fixed array to keep struct thread small (+12 bytes instead of +512)
+and to avoid an arbitrary descriptor limit.
 
 ---- ALGORITHMS ----
 
->> B3 - B8: (pending)
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+The handler checks that the stack word holding the syscall number and
+the 1+N argument words lie in mapped user memory
+(user_range_ok ()), copies the arguments into a kernel array and
+dispatches.  write () validates its whole buffer first; fd 1 is sent
+to putbuf ().  Any failure terminates the process with exit(-1).
+(Further hardening is described in later phases.)
 
 ---- SYNCHRONIZATION ----
 
->> B9 - B11: (pending)
+>> B9: The file system is not thread-safe.  How do you protect it?
 
----- RATIONALE ----
+A single global fs_lock.  load () holds it for all of its file
+accesses; fd_close () and fd_close_all () take it around file_close ().
+User memory is validated before the lock is taken, and the lock is
+never held while waiting for a child or creating a process, so it
+cannot be part of a deadlock cycle.
 
->> B12 - B14: (pending)
+---- PENDING (later phases) ----
+
+>> B3 (rest) - B8, B10 - B14: (pending)
 
                            SURVEY QUESTIONS
                            ================

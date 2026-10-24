@@ -463,6 +463,11 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+#ifdef USERPROG
+  t->exit_code = -1;   /* Killed/failed unless exit() says otherwise. */
+  list_init (&t->fd_list);
+  t->next_fd = 2;      /* 0 and 1 are the console. */
+#endif
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

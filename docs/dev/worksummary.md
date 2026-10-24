@@ -10,7 +10,7 @@ This document records the incremental progress, architectural decisions, file ch
 |---|---|---|---|---|
 | Phase 0 | Design Document Initialization | ✅ Done | `pintos/src/userprog/DESIGNDOC` | — |
 | Phase 1 | Argument Passing | ✅ Done (manual stack-dump verified) | `pintos/src/userprog/process.c` | `args-none` ... `args-dbl-space` (5) — need Phases 2/4 to pass |
-| Phase 2 | Syscall Dispatcher, FD Table & FS Lock | ⏳ Pending | `userprog/syscall.c`, `threads/thread.h` | `halt`, `exit` |
+| Phase 2 | Syscall Dispatcher, FD Table & FS Lock | ✅ Done | `pintos/src/userprog/syscall.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/process.c` | `halt`, `exit`, `args-*` (all PASS) |
 | Phase 3 | User Memory Access & Safety | ⏳ Pending | `userprog/syscall.c`, `userprog/exception.c` | `sc-*`, `bad-*`, `*-boundary` |
 | Phase 4 | Process Control (exec / wait / exit) | ⏳ Pending | `userprog/process.c`, `threads/thread.[ch]` | `exec-*`, `wait-*`, `multi-*` |
 | Phase 5 | File System Syscalls | ⏳ Pending | `userprog/syscall.c` | `create-*`, `open-*`, `read-*`, `write-*`, etc. |
@@ -43,3 +43,26 @@ This document records the incremental progress, architectural decisions, file ch
 - Temporary `hex_dump` + sleeping `process_wait` run of `args-many a b  c d`: argc=5, argv=0xbfffffd4, NULL sentinel, double space collapsed, 4-byte aligned `*esp`, fake return address 0. Temporary debug code then **removed**.
 - Official `args-*` tests are not run yet: they need `write`/`exit` (Phase 2) and a real `process_wait` (Phase 4); `process_wait()` still returns -1 and the syscall handler is still the stub.
 
+### Phase 2 - Syscall Dispatcher, FD Table & FS Lock
+
+**Files modified**
+- `pintos/src/userprog/syscall.c` (rewritten), `pintos/src/userprog/syscall.h`
+- `pintos/src/threads/thread.h`, `pintos/src/threads/thread.c` (`exit_code`, `fd_list`, `next_fd`; initialised in `init_thread`)
+- `pintos/src/userprog/process.c` (exit message + `fd_close_all()` in `process_exit`; `fs_lock` held during `load`; temporary `process_wait`)
+- `pintos/src/userprog/DESIGNDOC` (System Calls: B1, B2, B3 partial, B9)
+
+**Implementation**
+- Dispatcher: validates the syscall-number word and its N argument words, copies args to a kernel array, rejects numbers outside `SYS_HALT..SYS_CLOSE` with `exit(-1)`.
+- Implemented now: `halt`, `exit`, `write` (fd 1 via `putbuf`; other fds return -1 until the file-syscall phase). All other calls currently `exit(-1)`.
+- `fs_lock` (global), `fd_alloc/fd_lookup/fd_close/fd_close_all` (list of `struct fd_entry`, not inherited).
+- `process_exit` prints `name: exit(N)` for processes with a page directory; default `exit_code` is -1 so killed/failed-load processes report -1.
+
+**Design decisions / trade-offs**
+- FD list instead of array: +12 B in `struct thread` vs +512 B, no fd limit; O(n) lookup is fine.
+- Exit message pulled forward from the process-control phase because every `args-*` test checks it.
+- `user_range_ok()` here is a minimal page-mapped check needed to read args safely; the next phase hardens it (strings, buffers, fault handling).
+- **TEMPORARY**: `process_wait()` does `timer_sleep (300)` and returns -1 so the kernel does not power off early. Must be replaced in Phase 4.
+
+**Verification (Docker)**
+- `make` builds clean (only the pre-existing `lib/kernel/debug.c` frame-address warning).
+- `make -k tests/userprog/{halt,exit,args-none,args-single,args-multiple,args-many,args-dbl-space}.result`: all 7 PASS.

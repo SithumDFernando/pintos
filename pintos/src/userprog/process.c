@@ -17,6 +17,8 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/syscall.h"
+#include "devices/timer.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -115,6 +117,10 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  /* TEMPORARY (replaced by a real semaphore wait in the process
+     control phase): give the child time to run so that Pintos does
+     not power off before the user program finishes. */
+  timer_sleep (300);
   return -1;
 }
 
@@ -124,6 +130,13 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /* A user process announces its exit status; kernel threads have
+     no page directory.  Cleanup of the open files happens here too
+     so that every termination path (exit or kill) is covered. */
+  if (cur->pagedir != NULL)
+    printf ("%s: exit(%d)\n", cur->name, cur->exit_code);
+  fd_close_all ();
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -246,6 +259,10 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   if (!extract_prog_name (cmdline, file_name, sizeof file_name))
     return false;
 
+  /* All file system access in load() (open, read, close) is
+     serialized; the lock is dropped at `done'. */
+  lock_acquire (&fs_lock);
+
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
@@ -344,6 +361,7 @@ load (const char *cmdline, void (**eip) (void), void **esp)
  done:
   /* We arrive here whether the load is successful or not. */
   file_close (file);
+  lock_release (&fs_lock);
   return success;
 }
 
