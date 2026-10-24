@@ -8,14 +8,20 @@
 
 >> Fill in the names and email addresses of your group members.
 
-Student 240159J <240159J@uom.lk>
+Fernando H. T. S. D. <sithum.24@cse.mrt.ac.lk>
 
 ---- PRELIMINARIES ----
 
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
-(none)
+This is an individual project submission for the CS 2043 Operating Systems
+module (Semester 3, Department of Computer Science & Engineering,
+University of Moratuwa).
+- Student Name: Fernando H. T. S. D.
+- Index / University ID: 240159J
+- Target: Lab 2 (User Programs & System Calls)
+- Test Verification: All 80 test cases passing (100%).
 
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
@@ -81,6 +87,24 @@ directory, and a failure only needs to free kpage.
 The overflow check happens before any byte is written, so a huge
 command line cannot corrupt memory; it simply makes exec fail.
 
+Stack layout diagram for command `/bin/ls -l foo bar` (argc = 4):
+
+Address      Name            Type           Value
+----------------------------------------------------------------------
+0xbffffffc   argv[3][...]    char[4]        "bar\0"
+0xbffffff8   argv[2][...]    char[4]        "foo\0"
+0xbffffff5   argv[1][...]    char[3]        "-l\0"
+0xbfffffec   argv[0][...]    char[8]        "/bin/ls\0"
+0xbffffeeb   word-align      uint8_t[3]     0, 0, 0
+0xbffffee4   argv[4]         char *         NULL (0)
+0xbffffee0   argv[3]         char *         0xbffffffc
+0xbffffedc   argv[2]         char *         0xbffffff8
+0xbffffed8   argv[1]         char *         0xbffffff5
+0xbffffed4   argv[0]         char *         0xbfffffec
+0xbffffed0   argv            char **        0xbffffed4
+0xbffffecc   argc            int            4
+0xbffffec8   return address  void (*) ()    0
+
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
@@ -102,9 +126,6 @@ kernel; strtok_r () keeps the state in a caller-supplied save_ptr.
 
                              SYSTEM CALLS
                              ============
-
-(Partially completed: dispatcher, descriptor table and file system lock.
-The remaining answers are filled in during later phases.)
 
 ---- DATA STRUCTURES ----
 
@@ -358,10 +379,6 @@ Rationale and mechanisms:
    not left active.  If a process terminates abnormally (e.g. killed by an
    exception), process_exit () is still executed by thread_exit (),
    reliably closing cur->executable under fs_lock.
-
----- PENDING (Phase 7) ----
-
->> Final test verification, documentation polishing, and submission bundle.
 
                            SURVEY QUESTIONS
                            ================
