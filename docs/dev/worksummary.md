@@ -12,8 +12,8 @@ This document records the incremental progress, architectural decisions, file ch
 | Phase 1 | Argument Passing | ✅ Done (manual stack-dump verified) | `pintos/src/userprog/process.c` | `args-none` ... `args-dbl-space` (5) — need Phases 2/4 to pass |
 | Phase 2 | Syscall Dispatcher, FD Table & FS Lock | ✅ Done | `pintos/src/userprog/syscall.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/process.c` | `halt`, `exit`, `args-*` (all PASS) |
 | Phase 3 | User Memory Access & Safety | ✅ Done | `pintos/src/userprog/syscall.c`, `pintos/src/userprog/exception.c`, `pintos/src/userprog/DESIGNDOC` | `sc-*`, `bad-*`, `args-*`, `halt`, `exit` PASS; 7 boundary/file tests await later phases |
-| Phase 4 | Process Control (exec / wait / exit) | ⏳ Pending | `userprog/process.c`, `threads/thread.[ch]` | `exec-*`, `wait-*`, `multi-*` |
-| Phase 5 | File System Syscalls | ⏳ Pending | `userprog/syscall.c` | `create-*`, `open-*`, `read-*`, `write-*`, etc. |
+| Phase 4 | Process Control (exec / wait / exit) | ✅ Done | `pintos/src/userprog/process.[ch]`, `pintos/src/threads/thread.[ch]`, `pintos/src/userprog/syscall.c`, `pintos/src/userprog/DESIGNDOC` | `exec-*`, `wait-*`, `multi-recurse`, `args-*`, `halt`, `exit`, `sc-*`, `bad-*` (all PASS) |
+| Phase 5 | File System Syscalls | ✅ Done | `pintos/src/userprog/syscall.c`, `pintos/src/userprog/DESIGNDOC` | `create-*`, `open-*`, `close-*`, `read-*`, `write-*`, `multi-child-fd` (all 31 PASS) |
 | Phase 6 | Deny Writes to Running Executables | ⏳ Pending | `userprog/process.c` | `rox-*` |
 | Phase 7 | Full Test Suite Verification & Submission | ⏳ Pending | Full workspace | All 76 tests in `tests/userprog` |
 
@@ -85,4 +85,73 @@ This document records the incremental progress, architectural decisions, file ch
 - PASS (28): `halt`, `exit`, `args-{none,single,multiple,many,dbl-space}`, `sc-bad-sp`, `sc-bad-arg`, `sc-boundary{,-2,-3}`, `bad-read{,2}`, `bad-write{,2}`, `bad-jump{,2}`, `write-bad-ptr`, `read-bad-ptr`, `create-bad-ptr`, `open-bad-ptr`, `exec-bad-ptr`, `create-null`, `open-null`, `write-stdin`, `read-stdout`.
 - FAIL, expected (7), need unimplemented syscalls: `create-bound`, `open-boundary`, `read-boundary`, `write-boundary`, `write-normal`, `write-zero` (need `create`/`open`/`read`/`close`) and `exec-bound` (needs `exec`/`wait`). These cannot be judged until Phases 4-5.
 - Note: `*-bad-ptr`/`*-null` pass now because the unimplemented call exits -1; they must be re-run once the real syscalls exist.
+
+### Phase 4 - Process Control & Synchronization (exec, wait, exit)
+
+**Files modified**
+- `pintos/src/userprog/process.h`: defined `struct child_status` (tid, exit_code, load_ok, load_done, fn_copy, load_sema, exit_sema, ref_cnt, ref_lock, elem).
+- `pintos/src/userprog/process.c`:
+  - Implemented `release_status()` for reference-counted reclamation of `child_status`.
+  - Implemented `process_execute()`: allocates `child_status`, passes it to `thread_create()`, waits on `load_sema`, returns `TID_ERROR` if child load fails.
+  - Implemented `start_process()`: links `cur->my_status`, loads executable, frees command-line page, signals `load_sema`, exits if load failed.
+  - Implemented `process_wait()`: searches `cur->children`, blocks on `exit_sema`, removes child from list, releases reference, returns child exit code (or -1 if invalid/already waited). Replaces temporary `timer_sleep (300)`.
+  - Implemented `process_exit()`: announces exit `name: exit(code)`, closes all FDs, drops references to orphaned children, signals `exit_sema` and releases child reference to `my_status`, destroys page directory.
+- `pintos/src/threads/thread.h`: added `children` list and `my_status` pointer to `struct thread` under `USERPROG`.
+- `pintos/src/threads/thread.c`: initialized `children` list and `my_status = NULL` in `init_thread()`.
+- `pintos/src/userprog/syscall.c`: wired up `SYS_EXEC` (`sys_exec` validates cmdline with `valid_string`, calls `process_execute`) and `SYS_WAIT` (`sys_wait` calls `process_wait`). Removed `UNUSED` on `valid_string`.
+- `pintos/src/userprog/DESIGNDOC`: filled B1 (`child_status` and thread additions), B5 (`wait` algorithm and idempotency), B7 (`exec` load synchronization and failure handling), B8 (termination races and orphan cleanup), B11 (1:1 TID/PID mapping).
+
+**Design decisions / trade-offs**
+- Heap-allocated `struct child_status` shared by parent and child with `ref_cnt = 2` and `ref_lock`: decouples zombie status and exit code from the dying thread's 4 KB page, avoiding use-after-free regardless of whether parent or child exits first.
+- Strict child list isolation: `process_wait()` only checks `cur->children`, preventing wait on arbitrary TIDs or grandchildren. Removing from list immediately prevents duplicate wait calls from succeeding (`wait-twice`).
+- Two semaphores (`load_sema`, `exit_sema`): `load_sema` guarantees `exec` does not return until load status is known; `exit_sema` blocks `wait` until child exits or unblocks immediately if already dead.
+- Defense against child load crash: `process_exit()` checks `!cs->load_done` and signals `load_sema` if child dies mid-load so parent never deadlocks.
+- `fs_lock` is never held across `process_execute` or `process_wait`.
+
+**Verification (Docker, `make -k <test>.result`)**
+- Build: clean, no warnings or errors.
+- Key Targets PASS (31):
+  - `exec-*`: `exec-once`, `exec-arg`, `exec-bound`, `exec-bound-2`, `exec-bound-3`, `exec-multiple`, `exec-missing`, `exec-bad-ptr` (all 8 PASS).
+  - `wait-*`: `wait-simple`, `wait-twice`, `wait-killed`, `wait-bad-pid` (all 4 PASS).
+  - `multi-*`: `multi-recurse` (PASS, depth 15 recursion verified).
+  - Re-run regressions: `halt`, `exit`, `args-none`, `args-single`, `args-multiple`, `args-many`, `args-dbl-space`, `sc-bad-sp`, `sc-bad-arg`, `sc-boundary`, `sc-boundary-2`, `sc-boundary-3`, `bad-read`, `bad-read2`, `bad-write`, `bad-write2`, `bad-jump`, `bad-jump2` (all 18 PASS).
+- Note: `multi-child-fd` passes once Phase 5 is in place.
+
+### Phase 5 - File System Syscalls
+
+**Files modified**
+- `pintos/src/userprog/syscall.c`:
+  - Included `devices/input.h` and `filesys/filesys.h`.
+  - Implemented `sys_create()`: validates filename string, calls `filesys_create()` under `fs_lock`.
+  - Implemented `sys_remove()`: validates filename string, calls `filesys_remove()` under `fs_lock`.
+  - Implemented `sys_open()`: validates filename string, calls `filesys_open()` under `fs_lock`, registers file in `fd_alloc()`.
+  - Implemented `sys_filesize()`: looks up fd, returns `file_length()` under `fs_lock`.
+  - Implemented `sys_read()`: validates destination buffer, handles fd 0 via `input_getc()` loop (without `fs_lock`), rejects fd 1, reads file via `file_read()` under `fs_lock`.
+  - Implemented `sys_write()`: validates source buffer, handles fd 1 via `putbuf()` (without `fs_lock`), rejects fd 0, writes file via `file_write()` under `fs_lock`.
+  - Implemented `sys_seek()`: looks up fd, calls `file_seek()` under `fs_lock`.
+  - Implemented `sys_tell()`: looks up fd, returns `file_tell()` under `fs_lock`.
+  - Implemented `sys_close()`: calls `fd_close()`, which closes file under `fs_lock` and frees the entry. Ignores fds < 2.
+  - Wired all dispatch entries in `syscall_handler()`.
+- `pintos/src/threads/thread.h`: moved `struct child_status;` forward declaration outside `struct thread` to eliminate compiler warning.
+- `pintos/src/tests/userprog/sample.txt`: normalized line endings (removed Windows CRLF `\r` artifact that caused 4-byte size mismatch in sample file tests).
+- `pintos/src/userprog/DESIGNDOC`: answered B4 (page table walk inspection counts), B6 (bad-pointer resource safety and leak prevention), and B10 (rationale for returning error codes on invalid descriptors rather than process termination).
+
+**Design decisions / trade-offs**
+- Validate-then-lock pattern: all user buffer ranges and strings are validated before taking `fs_lock` to avoid leaving the lock held if an invalid address kills the process.
+- Lock avoidance on console I/O: reading from stdin (`input_getc`) and writing to stdout (`putbuf`) do not acquire `fs_lock`, allowing file I/O and console I/O to proceed concurrently without lock contention.
+- Invalid descriptor tolerance: unknown/closed descriptors, reading from stdout, writing to stdin, or closing console fds return -1 / false or silently ignore rather than killing the process, adhering to standard POSIX semantics.
+
+**Verification (Docker, `make check` and individual targets)**
+- Build: clean, zero warnings, zero errors.
+- Phase 5 Key Targets (31/31 PASS):
+  - `create-*` (7): `create-normal`, `create-empty`, `create-null`, `create-bad-ptr`, `create-long`, `create-exists`, `create-bound` (all PASS).
+  - `open-*` (7): `open-normal`, `open-missing`, `open-boundary`, `open-empty`, `open-null`, `open-bad-ptr`, `open-twice` (all PASS).
+  - `close-*` (5): `close-normal`, `close-twice`, `close-stdin`, `close-stdout`, `close-bad-fd` (all PASS).
+  - `read-*` (6): `read-normal`, `read-bad-ptr`, `read-boundary`, `read-zero`, `read-stdout`, `read-bad-fd` (all PASS).
+  - `write-*` (6): `write-normal`, `write-bad-ptr`, `write-boundary`, `write-zero`, `write-stdin`, `write-bad-fd` (all PASS).
+  - `multi-child-fd` (PASS, child cannot close parent's fd, parent reads correctly).
+- Full suite status: **77 of 80 tests pass**.
+- The only 3 failing tests across the entire suite are `rox-simple`, `rox-child`, `rox-multichild` (Phase 6: Deny Writes to Running Executables).
+
+
 

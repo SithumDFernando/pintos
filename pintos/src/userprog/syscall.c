@@ -3,14 +3,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <syscall-nr.h>
+#include "devices/input.h"
 #include "devices/shutdown.h"
 #include "filesys/file.h"
+#include "filesys/filesys.h"
 #include "lib/kernel/list.h"
 #include "threads/interrupt.h"
 #include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
+#include "userprog/process.h"
 
 /* Global file system lock; see userprog/syscall.h. */
 struct lock fs_lock;
@@ -86,7 +89,7 @@ valid_range (const void *uaddr, size_t size)
 /* True iff S is a NUL-terminated string lying entirely in valid user
    memory (at most MAX_USER_STRING bytes including the NUL).  Used by
    the file and exec system calls in later phases. */
-static bool valid_string (const char *s) UNUSED;
+static bool valid_string (const char *s);
 static bool
 valid_string (const char *s)
 {
@@ -200,19 +203,213 @@ fd_close_all (void)
 
 /* ---- System calls ---- */
 
-/* write (fd, buffer, size).  Only the console (fd 1) for now; file
-   descriptors are added in the file system phase. */
+/* exec (cmd_line).  Runs the executable given in cmd_line and returns
+   its process id (or -1 if it cannot be loaded). */
+static int
+sys_exec (const char *cmd_line)
+{
+  if (!valid_string (cmd_line))
+    syscall_exit (-1);
+  return process_execute (cmd_line);
+}
+
+/* wait (pid).  Waits for a direct child process to exit and returns
+   its exit status. */
+static int
+sys_wait (tid_t pid)
+{
+  return process_wait (pid);
+}
+
+/* create (file, initial_size).  Creates a new file named file with
+   the given initial size. */
+static bool
+sys_create (const char *file, unsigned initial_size)
+{
+  bool success;
+
+  if (!valid_string (file))
+    syscall_exit (-1);
+
+  lock_acquire (&fs_lock);
+  success = filesys_create (file, initial_size);
+  lock_release (&fs_lock);
+
+  return success;
+}
+
+/* remove (file).  Deletes the file named file. */
+static bool
+sys_remove (const char *file)
+{
+  bool success;
+
+  if (!valid_string (file))
+    syscall_exit (-1);
+
+  lock_acquire (&fs_lock);
+  success = filesys_remove (file);
+  lock_release (&fs_lock);
+
+  return success;
+}
+
+/* open (file).  Opens the file named file and returns its descriptor,
+   or -1 if the file could not be opened. */
+static int
+sys_open (const char *file)
+{
+  struct file *f;
+  int fd;
+
+  if (!valid_string (file))
+    syscall_exit (-1);
+
+  lock_acquire (&fs_lock);
+  f = filesys_open (file);
+  lock_release (&fs_lock);
+
+  if (f == NULL)
+    return -1;
+
+  fd = fd_alloc (f);
+  return fd;
+}
+
+/* filesize (fd).  Returns the size, in bytes, of the open file fd. */
+static int
+sys_filesize (int fd)
+{
+  struct file *file = fd_lookup (fd);
+  int len;
+
+  if (file == NULL)
+    return -1;
+
+  lock_acquire (&fs_lock);
+  len = file_length (file);
+  lock_release (&fs_lock);
+
+  return len;
+}
+
+/* read (fd, buffer, size).  Reads size bytes from the open file fd
+   into buffer.  Returns the number of bytes actually read, 0 at EOF,
+   or -1 on error. */
+static int
+sys_read (int fd, void *buffer, unsigned size)
+{
+  struct file *file;
+  int bytes_read;
+
+  if (!valid_range (buffer, size))
+    syscall_exit (-1);
+
+  if (size == 0)
+    return 0;
+
+  /* Stdin: keyboard input.  Do not hold fs_lock. */
+  if (fd == 0)
+    {
+      uint8_t *buf = buffer;
+      unsigned i;
+      for (i = 0; i < size; i++)
+        buf[i] = input_getc ();
+      return size;
+    }
+
+  /* Stdout cannot be read. */
+  if (fd == 1)
+    return -1;
+
+  file = fd_lookup (fd);
+  if (file == NULL)
+    return -1;
+
+  lock_acquire (&fs_lock);
+  bytes_read = file_read (file, buffer, size);
+  lock_release (&fs_lock);
+
+  return bytes_read;
+}
+
+/* write (fd, buffer, size).  Writes size bytes from buffer to the
+   open file fd.  Returns the number of bytes actually written, or -1
+   on error. */
 static int
 sys_write (int fd, const void *buffer, unsigned size)
 {
+  struct file *file;
+  int bytes_written;
+
   if (!valid_range (buffer, size))
     syscall_exit (-1);
+
+  if (size == 0)
+    return 0;
+
+  /* Stdout: console output.  Do not hold fs_lock. */
   if (fd == 1)
     {
       putbuf (buffer, size);
       return size;
     }
-  return -1;
+
+  /* Stdin cannot be written. */
+  if (fd == 0)
+    return -1;
+
+  file = fd_lookup (fd);
+  if (file == NULL)
+    return -1;
+
+  lock_acquire (&fs_lock);
+  bytes_written = file_write (file, buffer, size);
+  lock_release (&fs_lock);
+
+  return bytes_written;
+}
+
+/* seek (fd, position).  Changes the next byte to be read or written
+   in open file fd to position. */
+static void
+sys_seek (int fd, unsigned position)
+{
+  struct file *file = fd_lookup (fd);
+
+  if (file != NULL)
+    {
+      lock_acquire (&fs_lock);
+      file_seek (file, position);
+      lock_release (&fs_lock);
+    }
+}
+
+/* tell (fd).  Returns the position of the next byte to be read or
+   written in open file fd. */
+static unsigned
+sys_tell (int fd)
+{
+  struct file *file = fd_lookup (fd);
+  unsigned pos;
+
+  if (file == NULL)
+    return (unsigned) -1;
+
+  lock_acquire (&fs_lock);
+  pos = file_tell (file);
+  lock_release (&fs_lock);
+
+  return pos;
+}
+
+/* close (fd).  Closes file descriptor fd. */
+static void
+sys_close (int fd)
+{
+  if (fd < 2)
+    return;
+  fd_close (fd);
 }
 
 static void
@@ -241,11 +438,41 @@ syscall_handler (struct intr_frame *f)
       NOT_REACHED ();
     case SYS_EXIT:
       syscall_exit ((int) args[0]);
+    case SYS_EXEC:
+      f->eax = sys_exec ((const char *) args[0]);
+      break;
+    case SYS_WAIT:
+      f->eax = sys_wait ((tid_t) args[0]);
+      break;
+    case SYS_CREATE:
+      f->eax = sys_create ((const char *) args[0], (unsigned) args[1]);
+      break;
+    case SYS_REMOVE:
+      f->eax = sys_remove ((const char *) args[0]);
+      break;
+    case SYS_OPEN:
+      f->eax = sys_open ((const char *) args[0]);
+      break;
+    case SYS_FILESIZE:
+      f->eax = sys_filesize ((int) args[0]);
+      break;
+    case SYS_READ:
+      f->eax = sys_read ((int) args[0], (void *) args[1], (unsigned) args[2]);
+      break;
     case SYS_WRITE:
-      f->eax = sys_write ((int) args[0], (const void *) args[1], args[2]);
+      f->eax = sys_write ((int) args[0], (const void *) args[1], (unsigned) args[2]);
+      break;
+    case SYS_SEEK:
+      sys_seek ((int) args[0], (unsigned) args[1]);
+      break;
+    case SYS_TELL:
+      f->eax = sys_tell ((int) args[0]);
+      break;
+    case SYS_CLOSE:
+      sys_close ((int) args[0]);
       break;
     default:
-      /* Not implemented yet (later phases): terminate the caller. */
+      /* Project 3/4 calls not implemented yet: terminate the caller. */
       syscall_exit (-1);
     }
 }

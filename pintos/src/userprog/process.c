@@ -14,15 +14,32 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
+#include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/syscall.h"
-#include "devices/timer.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static bool extract_prog_name (const char *cmdline, char *prog, size_t size);
+static void release_status (struct child_status *cs);
+
+/* Drops one reference to CS and frees it if both parent and child
+   have released it. */
+static void
+release_status (struct child_status *cs)
+{
+  int ref;
+
+  lock_acquire (&cs->ref_lock);
+  ref = --cs->ref_cnt;
+  lock_release (&cs->ref_lock);
+
+  if (ref == 0)
+    free (cs);
+}
 
 /* Copies the first space-delimited token of CMDLINE into PROG
    (capacity SIZE, including the terminating null).  Returns false
@@ -45,14 +62,16 @@ extract_prog_name (const char *cmdline, char *prog, size_t size)
 }
 
 /* Starts a new thread running a user program loaded from
-   FILENAME.  The new thread may be scheduled (and may even exit)
-   before process_execute() returns.  Returns the new process's
-   thread id, or TID_ERROR if the thread cannot be created. */
+   FILE_NAME.  Blocks until the child process finishes loading
+   its executable.  Returns the new process's thread id, or
+   TID_ERROR if the thread cannot be created or if loading fails. */
 tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy;
   char prog_name[NAME_MAX + 1];   /* Small: at most 15 bytes. */
+  struct child_status *cs;
+  struct thread *cur = thread_current ();
   tid_t tid;
 
   /* The thread is named after the program only, not the whole
@@ -60,28 +79,67 @@ process_execute (const char *file_name)
   if (!extract_prog_name (file_name, prog_name, sizeof prog_name))
     return TID_ERROR;
 
+  /* Allocate child status record to coordinate with child. */
+  cs = malloc (sizeof *cs);
+  if (cs == NULL)
+    return TID_ERROR;
+
   /* Make a copy of FILE_NAME (the full command line).
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
-    return TID_ERROR;
+    {
+      free (cs);
+      return TID_ERROR;
+    }
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  cs->tid = TID_ERROR;
+  cs->exit_code = -1;
+  cs->load_ok = false;
+  cs->load_done = false;
+  cs->fn_copy = fn_copy;
+  sema_init (&cs->load_sema, 0);
+  sema_init (&cs->exit_sema, 0);
+  lock_init (&cs->ref_lock);
+  cs->ref_cnt = 2;
+
   /* Create a new thread to execute the program. */
-  tid = thread_create (prog_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (prog_name, PRI_DEFAULT, start_process, cs);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      palloc_free_page (fn_copy);
+      free (cs);
+      return TID_ERROR;
+    }
+
+  cs->tid = tid;
+  list_push_back (&cur->children, &cs->elem);
+
+  /* Wait until child finishes loading the executable. */
+  sema_down (&cs->load_sema);
+
+  if (!cs->load_ok)
+    {
+      list_remove (&cs->elem);
+      release_status (cs);
+      return TID_ERROR;
+    }
+
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *aux)
 {
-  char *file_name = file_name_;
+  struct child_status *cs = aux;
+  char *file_name = cs->fn_copy;
   struct intr_frame if_;
   bool success;
+
+  thread_current ()->my_status = cs;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -90,8 +148,16 @@ start_process (void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
+  /* Clean up command line page. */
   palloc_free_page (file_name);
+  cs->fn_copy = NULL;
+
+  /* Notify parent whether load succeeded. */
+  cs->load_ok = success;
+  cs->load_done = true;
+  sema_up (&cs->load_sema);
+
+  /* If load failed, quit. */
   if (!success) 
     thread_exit ();
 
@@ -110,18 +176,39 @@ start_process (void *file_name_)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  /* TEMPORARY (replaced by a real semaphore wait in the process
-     control phase): give the child time to run so that Pintos does
-     not power off before the user program finishes. */
-  timer_sleep (300);
-  return -1;
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  struct child_status *cs = NULL;
+  int exit_code;
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
+    {
+      struct child_status *c = list_entry (e, struct child_status, elem);
+      if (c->tid == child_tid)
+        {
+          cs = c;
+          break;
+        }
+    }
+
+  if (cs == NULL)
+    return -1;
+
+  /* Wait for child to exit. */
+  sema_down (&cs->exit_sema);
+
+  exit_code = cs->exit_code;
+
+  /* Remove from list so a second wait returns -1. */
+  list_remove (&cs->elem);
+  release_status (cs);
+
+  return exit_code;
 }
 
 /* Free the current process's resources. */
@@ -137,6 +224,30 @@ process_exit (void)
   if (cur->pagedir != NULL)
     printf ("%s: exit(%d)\n", cur->name, cur->exit_code);
   fd_close_all ();
+
+  /* Release child status records of all our children (orphan adoption). */
+  while (!list_empty (&cur->children))
+    {
+      struct list_elem *e = list_pop_front (&cur->children);
+      struct child_status *cs = list_entry (e, struct child_status, elem);
+      release_status (cs);
+    }
+
+  /* Notify parent of our exit status and drop our reference. */
+  if (cur->my_status != NULL)
+    {
+      struct child_status *cs = cur->my_status;
+      cs->exit_code = cur->exit_code;
+      if (!cs->load_done)
+        {
+          cs->load_ok = false;
+          cs->load_done = true;
+          sema_up (&cs->load_sema);
+        }
+      sema_up (&cs->exit_sema);
+      release_status (cs);
+      cur->my_status = NULL;
+    }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

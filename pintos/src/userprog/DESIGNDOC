@@ -112,10 +112,19 @@ The remaining answers are filled in during later phases.)
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+struct child_status (pintos/src/userprog/process.h):
+  tid_t tid; int exit_code; bool load_ok; bool load_done;
+  char *fn_copy; struct semaphore load_sema; struct semaphore exit_sema;
+  int ref_cnt; struct lock ref_lock; struct list_elem elem;
+  Coordinates process creation, load status, exit code, and
+  synchronization between parent and child via reference counting.
+
 struct thread (pintos/src/threads/thread.h, under USERPROG), new members:
-  int exit_code;         Status given to exit(); -1 by default (killed).
-  struct list fd_list;   This process's open files (struct fd_entry).
-  int next_fd;           Next descriptor to hand out; starts at 2.
+  int exit_code;                      Status given to exit(); -1 by default.
+  struct list fd_list;                This process's open files (struct fd_entry).
+  int next_fd;                        Next descriptor to hand out; starts at 2.
+  struct list children;               Child processes (struct child_status).
+  struct child_status *my_status;     Shared status record with parent.
 
 struct fd_entry (pintos/src/userprog/syscall.c):
   int fd; struct file *file; struct list_elem elem;
@@ -170,7 +179,117 @@ Alternative rejected: get_user ()/put_user () with fault recovery is
 faster but needs assembly helpers and careful release of resources
 from the fault handler; the explicit checks are simpler to verify.
 
+>> B4: Suppose a system call causes a full 4,096-byte page to be read
+>> from or written to user memory.  What is the least number of
+>> inspections of the page table (e.g. calls to pagedir_get_page()) that
+>> might result?  What is the greatest number of inspections?  What
+>> about for a system call that reads or writes two consecutive bytes?
+>> Is your code capable of being modified to read or write only parts of
+>> a page in user memory?
+
+In valid_range (uaddr, size):
+- For a 4,096-byte copy:
+  - Least inspections: 2 calls to pagedir_get_page ().  If the buffer
+    is page-aligned, valid_byte (start) and valid_byte (last) both
+    check the same page.  The loop pg_round_down (start) + PGSIZE < last
+    does not execute.  (Both ends checked: 2 calls).
+  - Greatest inspections: 3 calls to pagedir_get_page ().  If the
+    buffer is not page-aligned, start lies on page P0 and last lies on
+    page P1.  valid_byte (start) checks P0 (1 call), valid_byte (last)
+    checks P1 (1 call), and the loop checks the boundary page (1 call).
+- For two consecutive bytes:
+  - Exactly 2 inspections in both cases: valid_byte (start) and
+    valid_byte (last).  The loop does not run.
+- Partial page transfer:
+  Our code validates the whole buffer upfront and aborts with exit(-1)
+  if any byte is invalid, preserving atomic failure semantics.  It
+  could be modified to read/write partial pages by chunking the
+  transfer page-by-page until an unmapped address is encountered.
+
+>> B5: How does your code ensure that wait() will fail for a given
+>> process id if the process was not created by the calling process, or
+>> if the calling process has already called wait() on that process?
+
+The parent scans its own cur->children list looking for a child_status
+whose tid matches child_tid.  If no matching record is found (e.g. invalid
+tid, or a grandchild belonging to another thread's children list),
+process_wait () immediately returns -1.  When a matching child_status is
+found, the parent waits on cs->exit_sema, reads cs->exit_code, and
+immediately removes cs from cur->children with list_remove (&cs->elem)
+before releasing its reference.  Any subsequent call to wait () for the
+same tid fails to find the entry and returns -1.
+
+>> B6: Any access to user memory could fail if the user passed an
+>> invalid pointer.  Why does your code not leak resources when this
+>> happens?  Do you have to make any special effort to prevent resource
+>> leaks in such cases?
+
+Every user pointer, string, and buffer is validated before any kernel
+resource (file descriptor, malloc heap memory, or global lock) is
+allocated or acquired.  Specifically:
+1. Syscall numbers and arguments are validated before reading.
+2. User strings and buffers are validated before taking fs_lock.
+3. If validation fails, syscall_exit (-1) invokes process_exit (),
+   which unconditionally closes and frees all open files in fd_list,
+   releases child status structures, signals exit status, and cleans
+   up the page directory.
+Because validation precedes resource acquisition and cleanup is
+centralized in process_exit (), no resources can leak.
+
 ---- SYNCHRONIZATION ----
+
+>> B7: How does your code ensure that exec() will not return until the
+>> child process has successfully loaded its executable?  What
+>> happens if the load fails?
+
+process_execute () allocates a struct child_status with load_sema
+initialized to 0 and load_ok initialized to false.  After calling
+thread_create (), the parent blocks on sema_down (&cs->load_sema).
+The child invokes load () inside start_process (); upon completion
+(success or failure), it records the outcome in cs->load_ok, sets
+cs->load_done = true, and calls sema_up (&cs->load_sema).  The parent
+unblocks: if cs->load_ok is true, it returns the child's tid; if false,
+it removes cs from cur->children, drops its reference, and returns
+TID_ERROR (-1).  If the child is terminated or faults before completing
+load, process_exit () detects !cs->load_done, sets cs->load_ok = false,
+and ups load_sema so the parent never hangs.
+
+>> B8: Consider parent process P and child process C.  Some possible
+>> termination orders are:
+>>   1. P terminates before C.
+>>   2. C terminates before P calls wait() on C.
+>>   3. C terminates after P calls wait() on C.
+>> In each case, describe the events that occur, including the timing of
+>> the release of the process's resources.
+
+Each child_status has a ref_cnt initially set to 2 (one reference held
+by P in cur->children, one held by C in cur->my_status), protected by
+ref_lock.
+
+1. P terminates before C:
+   In process_exit (), P iterates through cur->children, removing each
+   child_status and calling release_status (), decrementing ref_cnt to 1.
+   P exits and its thread page is freed.  When C later terminates, C's
+   process_exit () sets cs->exit_code, ups cs->exit_sema (unconsumed),
+   and calls release_status (), decrementing ref_cnt to 0, which frees
+   the struct child_status.  No zombie leak occurs.
+
+2. C terminates before P calls wait() on C:
+   In process_exit (), C sets cs->exit_code, calls sema_up (&cs->exit_sema),
+   and calls release_status (), decrementing ref_cnt to 1.  C's thread
+   page and user memory are completely freed, but child_status remains
+   allocated in P's children list.  When P later calls process_wait (C),
+   sema_down (&cs->exit_sema) succeeds immediately without blocking.
+   P reads cs->exit_code, removes cs from cur->children, and calls
+   release_status (), decrementing ref_cnt to 0 and freeing child_status.
+
+3. C terminates after P calls wait() on C:
+   P finds C in cur->children and blocks on sema_down (&cs->exit_sema).
+   When C terminates, process_exit () records cs->exit_code, calls
+   sema_up (&cs->exit_sema) waking P, and drops C's reference (ref_cnt
+   becomes 1).  P unblocks, reads the exit code, removes cs from
+   cur->children, and calls release_status (), decrementing ref_cnt to 0
+   and freeing child_status.
 
 >> B9: The file system is not thread-safe.  How do you protect it?
 
@@ -180,9 +299,35 @@ User memory is validated before the lock is taken, and the lock is
 never held while waiting for a child or creating a process, so it
 cannot be part of a deadlock cycle.
 
+---- RATIONALE ----
+
+>> B10: What is your rationale for choosing how to handle bad file
+>> descriptors (e.g. negative values, descriptors not opened by this
+>> process, stdin/stdout misuse)?
+
+When given an invalid file descriptor (negative values, unknown/closed
+descriptors, writing to stdin, or reading from stdout), our code
+returns an error code (-1 for read/write/filesize/tell, false for close,
+and ignores seek) rather than terminating the process.
+Rationale:
+1. Conforms to standard POSIX semantics (EBADF returns -1; not SIGSEGV).
+2. A bad pointer violates memory protection and must kill the process,
+   whereas an invalid descriptor is an ordinary runtime error that a
+   well-behaved application can inspect, handle, and recover from.
+3. Test suites (read-bad-fd, write-stdin, close-stdin, etc.) accept -1
+   or false, allowing processes to continue executing normally.
+
+>> B11: How does your implementation map a process id to a kernel
+>> thread id?
+
+Pintos adheres to a 1:1 threading model for user processes: each user
+process corresponds directly to exactly one kernel thread.  Therefore,
+the process id (pid_t) is identical to the kernel thread id (tid_t).
+No translation table is necessary.
+
 ---- PENDING (later phases) ----
 
->> B3 (rest) - B8, B10 - B14: (pending)
+>> B12 - B14: (pending)
 
                            SURVEY QUESTIONS
                            ================

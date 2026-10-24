@@ -467,6 +467,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->exit_code = -1;   /* Killed/failed unless exit() says otherwise. */
   list_init (&t->fd_list);
   t->next_fd = 2;      /* 0 and 1 are the console. */
+  list_init (&t->children);
+  t->my_status = NULL;
 #endif
 
   old_level = intr_disable ();
