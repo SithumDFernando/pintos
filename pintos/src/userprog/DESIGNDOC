@@ -20,7 +20,37 @@ Department of CSE, University of Moratuwa.
 - Name: Fernando H. T. S. D.
 - Index: 240159J
 - Lab 2 (User Programs & System Calls)
-- All 80 tests passing.
+- All 80 tests passing (`make check` in pintos/src/userprog).
+
+Build and test environment: the course Docker image `pintos`
+(i386-elf-gcc 6.2.0, QEMU), run as container `pintos-240159J` with
+pintos/src mounted at /pintos/src.
+`make clean && make` in pintos/src/userprog builds with no warnings in
+any file I changed; the 5 remaining warnings are in unmodified base
+files (pintos/src/devices/ide.c, pintos/src/lib/debug.[ch],
+pintos/src/lib/kernel/debug.c).
+
+Evidence of testing (in pintos/src/userprog/screenshots/):
+  01-clean-build.png            Clean build, exit status 0, no
+                                warnings in modified files.
+  02-make-check-summary.png     `make check` summary:
+                                "All 80 tests passed."
+  03-argument-passing-run.png   Manual run of
+                                'args-multiple some   arguments for  you!'
+                                showing argc/argv (repeated spaces
+                                collapsed) and the exit message.
+  04-stack-hex-dump.png         hex_dump of the initial user stack
+                                for 'ls-prog -l foo bar' (see A2),
+                                taken from a temporary debug build
+                                in a scratch copy of the tree; the
+                                submitted source has no debug code.
+  make-check-full.log           Full `make check` console log.
+
+Files changed from the base code:
+  pintos/src/threads/thread.c, pintos/src/threads/thread.h,
+  pintos/src/userprog/exception.c, pintos/src/userprog/process.c,
+  pintos/src/userprog/process.h, pintos/src/userprog/syscall.c,
+  pintos/src/userprog/syscall.h
 
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
@@ -87,23 +117,41 @@ directory, and a failure only needs to free kpage.
 I do the overflow check before writing anything, so a huge command
 line can't corrupt memory -- it just makes exec fail cleanly.
 
-Stack layout diagram for command `/bin/ls -l foo bar` (argc = 4):
+Stack layout my code builds for `/bin/ls -l foo bar` (argc = 4,
+PHYS_BASE = 0xc0000000).  Because I copy the strings in order
+argv[0]..argv[3], "/bin/ls" sits at the top; the spec's example puts
+"bar" there instead.  The spec says the string order does not matter,
+since the program only reaches the strings through the argv[] pointers.
 
 Address      Name            Type           Value
 ----------------------------------------------------------------------
-0xbffffffc   argv[3][...]    char[4]        "bar\0"
-0xbffffff8   argv[2][...]    char[4]        "foo\0"
+0xbffffff8   argv[0][...]    char[8]        "/bin/ls\0"
 0xbffffff5   argv[1][...]    char[3]        "-l\0"
-0xbfffffec   argv[0][...]    char[8]        "/bin/ls\0"
-0xbffffeeb   word-align      uint8_t[3]     0, 0, 0
-0xbffffee4   argv[4]         char *         NULL (0)
-0xbffffee0   argv[3]         char *         0xbffffffc
-0xbffffedc   argv[2]         char *         0xbffffff8
-0xbffffed8   argv[1]         char *         0xbffffff5
-0xbffffed4   argv[0]         char *         0xbfffffec
-0xbffffed0   argv            char **        0xbffffed4
-0xbffffecc   argc            int            4
-0xbffffec8   return address  void (*) ()    0
+0xbffffff1   argv[2][...]    char[4]        "foo\0"
+0xbfffffed   argv[3][...]    char[4]        "bar\0"
+0xbfffffec   word-align      uint8_t        0
+0xbfffffe8   argv[4]         char *         NULL (0)
+0xbfffffe4   argv[3]         char *         0xbfffffed
+0xbfffffe0   argv[2]         char *         0xbffffff1
+0xbfffffdc   argv[1]         char *         0xbffffff5
+0xbfffffd8   argv[0]         char *         0xbffffff8
+0xbfffffd4   argv            char **        0xbfffffd8
+0xbfffffd0   argc            int            4
+0xbfffffcc   return address  void (*) ()    0
+
+The initial user stack pointer (*esp) is 0xbfffffcc, the same as in
+the spec.  I checked this table against a real hex_dump of the stack,
+running the same command with the 7-character program name "ls-prog"
+because the Pintos file system has no directories ("/bin/ls" cannot be
+opened).  The string lengths are identical, so the addresses are too:
+
+bfffffc0                                      00 00 00 00 |            ....|
+bfffffd0  04 00 00 00 d8 ff ff bf-f8 ff ff bf f5 ff ff bf |................|
+bfffffe0  f1 ff ff bf ed ff ff bf-00 00 00 00 00 62 61 72 |.............bar|
+bffffff0  00 66 6f 6f 00 2d 6c 00-6c 73 2d 70 72 6f 67 00 |.foo.-l.ls-prog.|
+
+(pintos/src/userprog/screenshots/04-stack-hex-dump.png; a normal run
+with arguments is in 03-argument-passing-run.png.)
 
 ---- RATIONALE ----
 
