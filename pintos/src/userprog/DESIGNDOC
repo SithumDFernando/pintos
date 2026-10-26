@@ -8,7 +8,7 @@
 
 >> Fill in the names and email addresses of your group members.
 
-Fernando H. T. S. D. <sithum.24@cse.mrt.ac.lk>
+Fernando H. T. S. D. (240159J) <sithum.24@cse.mrt.ac.lk>
 
 ---- PRELIMINARIES ----
 
@@ -259,13 +259,12 @@ assembly helpers and makes resource cleanup from the fault path
 harder to get right.  The explicit page-table checks felt simpler to
 reason about and debug.
 
->> B4: Suppose a system call causes a full 4,096-byte page to be read
->> from or written to user memory.  What is the least number of
->> inspections of the page table (e.g. calls to pagedir_get_page()) that
->> might result?  What is the greatest number of inspections?  What
->> about for a system call that reads or writes two consecutive bytes?
->> Is your code capable of being modified to read or write only parts of
->> a page in user memory?
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
 
 Looking at my valid_range (uaddr, size) implementation:
 - 4,096-byte copy:
@@ -278,15 +277,21 @@ Looking at my valid_range (uaddr, size) implementation:
 - Two consecutive bytes:
   Always exactly 2 calls -- valid_byte (start) and valid_byte (last).
   The loop body never executes since there's no intermediate page.
-- Partial page transfer:
-  Right now I validate the entire buffer upfront and kill the process
-  if any part is invalid (all-or-nothing).  It could be changed to
-  do page-by-page transfers, stopping at the first unmapped page,
-  but I didn't need that for this project.
+- Room for improvement:
+  Yes.  A 4,096-byte buffer touches at most two pages, so the
+  theoretical minimum is 1 inspection (aligned) and 2 (straddling),
+  one per page, i.e. save 1 call in each case; for 2 bytes it is 1
+  when both bytes share a page (2 only when they straddle a boundary).
+  My valid_range () always checks the first and last byte separately
+  even when they are on the same page.  Caching the last page checked
+  would remove that redundancy.  The get_user ()/put_user () approach
+  would need no explicit page-table inspection at all, as the MMU
+  checks each access and the page-fault handler recovers.  I validate
+  the entire buffer upfront and kill the process if any part is
+  invalid (all-or-nothing).
 
->> B5: How does your code ensure that wait() will fail for a given
->> process id if the process was not created by the calling process, or
->> if the calling process has already called wait() on that process?
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
 
 In process_wait (), I scan cur->children looking for a child_status
 whose tid matches child_tid.  If there's no match -- maybe the tid is
@@ -295,28 +300,62 @@ When I do find a match, I block on cs->exit_sema until the child
 exits, read cs->exit_code, and then immediately remove cs from the
 children list and release my reference.  Because I remove it from the
 list straight away, any second call to wait () on the same tid won't
-find it and will return -1.
+find it and will return -1, so wait () also fails for a tid that is
+not a direct child or was already waited for.
 
->> B6: Any access to user memory could fail if the user passed an
->> invalid pointer.  Why does your code not leak resources when this
->> happens?  Do you have to make any special effort to prevent resource
->> leaks in such cases?
+On the termination side, process_exit () of the child stores the exit
+code, ups exit_sema (waking a waiting parent) and drops its reference
+to the child_status; the status therefore outlives the child thread
+when the parent has not waited yet (see B8).
 
-I validate every user pointer, string, and buffer before allocating
-or acquiring any kernel resource (like a file descriptor, malloc
-memory, or the fs_lock).  Syscall numbers and arguments are checked
-before I read them, and user strings/buffers are validated before I
-take fs_lock.  If any validation fails, syscall_exit (-1) triggers
-process_exit (), which closes all open files in fd_list, frees child
-status structures, signals exit_sema, and destroys the page directory.
-Since I always validate first and cleanup is all centralized in
-process_exit (), there's no path that can leak resources.
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+To keep error handling out of the main logic, all checking is pulled
+into the three small predicates valid_byte (), valid_range () and
+valid_string () (see B3), and every failure goes through a single exit
+path, syscall_exit (-1), which never returns.  The handler first
+validates the syscall number word and its 1+N argument words and
+copies the arguments into a kernel-side array, so the individual
+syscall implementations (syscall_write (), syscall_open (), ...) can
+assume their arguments are already safe and contain a single
+"if (!valid_...) syscall_exit (-1);" line each instead of nested
+error paths.
+
+To avoid leaking resources, I validate every user pointer, string and
+buffer *before* allocating or acquiring any kernel resource (a file
+descriptor, malloc memory or fs_lock).  When validation fails there is
+therefore nothing temporary to undo.  Whatever the process already
+owns is released centrally: syscall_exit (-1) (or kill () in
+pintos/src/userprog/exception.c for hardware faults) leads to
+process_exit (), which closes every open file in fd_list and the
+executable, releases the child_status records, ups exit_sema and
+destroys the page directory.  There is no path that can leak.
+
+Example: write (fd, buf, 100) with buf pointing into unmapped memory.
+The handler validates the stack words, valid_range (buf, 100) fails,
+and syscall_exit (-1) is called before fs_lock is taken.  The process
+prints "name: exit(-1)" and process_exit () frees its fd_list and
+child_status records.  The same cleanup runs for the bad-jump and
+bad-read tests, which are killed by the page-fault handler.
 
 ---- SYNCHRONIZATION ----
 
->> B7: How does your code ensure that exec() will not return until the
->> child process has successfully loaded its executable?  What
->> happens if the load fails?
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
 
 In process_execute (), I allocate a child_status with load_sema = 0
 and load_ok = false, then call thread_create ().  The parent
@@ -333,26 +372,27 @@ finishes loading (e.g., it page-faults during load), process_exit ()
 checks !cs->load_done and ups load_sema anyway, so the parent never
 deadlocks.
 
->> B8: Consider parent process P and child process C.  Some possible
->> termination orders are:
->>   1. P terminates before C.
->>   2. C terminates before P calls wait() on C.
->>   3. C terminates after P calls wait() on C.
->> In each case, describe the events that occur, including the timing of
->> the release of the process's resources.
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
 
 Each child_status starts with ref_cnt = 2 (one for the parent, one
-for the child), protected by ref_lock.
+for the child), protected by ref_lock.  The last side to release it
+frees it, so neither side needs to know who exits first.  The exit
+code is written before exit_sema is upped, and exit_sema is what the
+parent blocks on, so there is no race on the exit code.
 
-1. P exits before C:
-   When P calls process_exit (), it walks cur->children and calls
-   release_status () on each one, dropping ref_cnt to 1.  P's thread
-   page gets freed.  Later when C exits, it sets cs->exit_code, ups
-   exit_sema (nobody's listening, but that's fine), and calls
-   release_status () which drops ref_cnt to 0 and frees the struct.
-   No memory leaks.
+1. P calls wait(C) before C exits:
+   P finds C's entry in cur->children and blocks on exit_sema.  When
+   C finishes and calls process_exit (), it records the exit code,
+   ups exit_sema (waking P), and drops its reference.  P wakes up,
+   grabs the exit code, removes cs, and calls release_status () to
+   free it.
 
-2. C exits before P waits:
+2. P calls wait(C) after C exits:
    C's process_exit () stores its exit code, does sema_up on
    exit_sema, and drops its reference (ref_cnt goes to 1).  C's
    thread page and user memory get freed, but the child_status stays
@@ -361,79 +401,135 @@ for the child), protected by ref_lock.
    was already upped.  P reads the exit code, removes cs from the
    list, and releases its reference, freeing the child_status.
 
-3. P waits while C is still running:
-   P finds C's entry in cur->children and blocks on exit_sema.  When
-   C finishes and calls process_exit (), it records the exit code,
-   ups exit_sema (waking P), and drops its reference.  P wakes up,
-   grabs the exit code, removes cs, and calls release_status () to
-   free it.
+3. P terminates without waiting, before C exits:
+   When P calls process_exit (), it walks cur->children and calls
+   release_status () on each one, dropping ref_cnt to 1.  P's thread
+   page gets freed.  Later when C exits, it sets cs->exit_code, ups
+   exit_sema (nobody's listening, but that's fine), and calls
+   release_status () which drops ref_cnt to 0 and frees the struct.
+   No memory leaks.
 
->> B9: The file system is not thread-safe.  How do you protect it?
+4. P terminates without waiting, after C exits:
+   C already dropped its reference (ref_cnt == 1), so P's
+   release_status () in process_exit () brings it to 0 and frees the
+   child_status.
 
-I use a single global fs_lock.  load () holds it for all its file
-operations, and fd_close () / fd_close_all () acquire it around
-file_close ().  I always validate user memory before taking the lock,
-and I never hold it while waiting for a child or creating a process,
-so there's no way it can cause a deadlock.
+Special cases: (a) wait () on a tid that is not a direct child, or a
+second wait () on the same child, returns -1 because the entry is not
+in cur->children (see B5).  (b) If C is killed during load, the
+!load_done check in process_exit () ups load_sema so P's exec () never
+deadlocks (see B7).  (c) A process killed by the kernel has exit_code
+-1, which is what its parent sees.  (d) fs_lock is never held while
+waiting for a child, and the running executable is closed (re-allowing
+writes) before exit_sema is upped, so the parent sees writes enabled
+once wait () returns.
 
 ---- RATIONALE ----
 
->> B10: What is your rationale for choosing how to handle bad file
->> descriptors (e.g. negative values, descriptors not opened by this
->> process, stdin/stdout misuse)?
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
 
-If a process passes a bad file descriptor -- negative, not open,
-writing to stdin, reading from stdout -- I return an error value (-1
-for read/write/filesize/tell, false for close, and just ignore seek)
-instead of killing the process.  My reasoning is that a bad fd is a
-normal runtime error, not a memory violation.  The process should be
-able to check the return value and handle it, similar to how Unix
-systems work.  A bad *pointer* is different -- that's a protection
-fault and the process has to die.  This approach also lines up with
-what the tests expect (read-bad-fd, write-stdin, etc. all check
-that the process survives and gets -1 back).
+I chose verify-then-dereference: check that the pointer is non-NULL,
+below PHYS_BASE and mapped (pagedir_get_page ()) before touching it,
+and call syscall_exit (-1) when it is not.  It is plain C with no
+inline assembly, every check happens at one visible place before any
+resource is taken (so cleanup is trivial, see B6), and it is easy to
+reason about and debug.  The get_user ()/put_user () approach is
+faster, because the MMU does the checking, but it needs assembly
+helpers and a page-fault handler that can resume the kernel at a
+recovery address, which makes releasing locks and buffers from the
+fault path harder to get right.  The cost of my choice is a few extra
+page-table lookups (see B4).  kill () and page_fault () in
+pintos/src/userprog/exception.c remain as a backstop for any user
+fault that slips through.
 
->> B11: How does your implementation map a process id to a kernel
->> thread id?
+The file system is not thread-safe, so every file system call is
+protected by one global fs_lock.  load () holds it for all its file
+operations, and fd_close () / fd_close_all () acquire it around
+file_close ().  User memory is always validated before taking the
+lock, and the lock is never held while waiting for a child or creating
+a process, so it cannot cause a deadlock.
 
-In Pintos each user process is backed by exactly one kernel thread,
-so I just use the tid as the pid directly.  pid_t and tid_t are the
-same thing and I don't need any kind of translation table.
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
 
->> B12: How does your implementation prevent writes to running
->> executables?  Why is the file kept open rather than only holding
->> an inode or relying on an external lock?
+Advantages:
+ - A per-thread linked list adds only 12 bytes to struct thread (a
+   fixed array would add 512), which matters because the 4 KB thread
+   page also holds the kernel stack.
+ - There is no arbitrary limit on the number of open files; it is
+   only bounded by available memory.
+ - fd_close_all () in process_exit () closes everything on every
+   termination path, so nothing leaks.
+ - Descriptors are per-process, so a process cannot touch another's
+   files.
+Disadvantages:
+ - fd_lookup () is a linear walk, O (n) in the number of open files
+   (an array would give O (1)).
+ - Each open file costs a malloc'ed fd_entry, and malloc failure in
+   open () must be handled (open returns -1).
+ - File descriptors are not inherited by children and there is no
+   dup ()/dup2 ().
 
-After load () successfully reads the ELF segments and sets up the
-stack, I call file_deny_write (file) and store the open file handle
-in t->executable instead of closing it at the done: label.
+Bad descriptors (negative, not open, writing to stdin, reading from
+stdout) return an error value (-1 for read/write/filesize/tell, false
+for close, and seek is ignored) instead of killing the process.  A bad
+fd is a normal runtime error, not a memory violation, so the process
+can check the return value as in Unix.  A bad *pointer* is a protection
+fault and the process has to die.  This matches what the tests expect
+(read-bad-fd, write-stdin, etc.).
 
-The key idea is that Pintos ties write-denial to the open file handle.
-file_deny_write () increments inode->deny_write_cnt, and file_close ()
-automatically calls file_allow_write () to decrement it.  If I closed
-the file right after loading, writes would be allowed again
-immediately, which defeats the purpose.  By keeping the file open for
-the entire lifetime of the process, writes stay denied until the
-process exits.
+Writes to running executables are denied by keeping the executable
+open: after load () succeeds I call file_deny_write () and store the
+handle in t->executable instead of closing it.  Pintos ties write
+denial to the open handle (file_deny_write () increments
+inode->deny_write_cnt and file_close () calls file_allow_write ()), so
+closing right after loading would allow writes again.  Each process
+opens its own struct file on the same inode, so for concurrent runs of
+one binary (rox-multichild) writes stay denied until every instance
+has exited.  process_exit () closes cur->executable under fs_lock
+before signaling exit_sema (rox-child checks this), and a failed load
+() closes the file at its done: label, so no handle leaks.
 
-For concurrent executions of the same binary (like in rox-multichild),
-each process opens its own struct file pointing to the same inode.
-Each one increments deny_write_cnt, so writes remain blocked until
-every instance terminates and closes its handle.
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
 
-In process_exit (), I close cur->executable under fs_lock *before*
-signaling exit_sema.  This ordering matters because the parent needs
-to see writes re-enabled by the time wait () returns (the rox-child
-test checks this).
-
-If load () fails partway through, the file gets closed at the done:
-label as usual, so there's no handle leak.  And if the process dies
-from an exception, thread_exit () still goes through process_exit (),
-so cur->executable always gets cleaned up.
+I did not change it.  Each user process is backed by exactly one
+kernel thread, so pid_t and tid_t are the same value and no
+translation table is needed.  process_wait () matches the child by
+tid in cur->children, and a separate pid space would add a mapping
+structure with no benefit for a single-threaded process model.
 
                            SURVEY QUESTIONS
                            ================
 
->> Any feedback on the assignment is welcome.
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+(none)
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+(none)
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+(none)
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+(none)
+
+>> Any other comments?
 
 (none)
